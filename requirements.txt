@@ -1,7 +1,4 @@
-pyrogram
+pyrogram==2.0.0
 tgcrypto
-openai
-TTS
-yt-dlp
-pydub
 aiohttp
+yt-dlp
