@@ -2,4 +2,5 @@ tgcrypto
 aiohttp
 telethon
 yt-dlp
+pyrogram
 
