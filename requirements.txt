@@ -1,4 +1,5 @@
 tgcrypto
 aiohttp
-telethon==1.34.0
-yt-dlp==2025.9.22
+telethon
+yt-dlp
+
