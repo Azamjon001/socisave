@@ -104,7 +104,7 @@ def generate_task() -> str:
 async def start(_, message):
     await message.reply_text(
         "Привет! 👋\n\n"
-        "📥 Отправь ссылку на YouTube или Instagram — Я буду скачивать его для вас\n"
+        "📥 Отправь ссылку на Instagram — Я буду скачивать его для вас\n"
     )
 
 @app.on_message(filters.text & ~filters.command("start"))
@@ -151,3 +151,4 @@ async def cleanup_messages(_, message):
 # ------------------------- запуск -------------------------
 if __name__ == "__main__":
     app.run()
+
