@@ -99,6 +99,17 @@ def generate_task() -> str:
         ]
         return random.choice(riddles)
 
+
+ydl_opts = {
+    'outtmpl': 'downloads/%(title)s.%(ext)s',
+    'cookies': 'cookies.txt',
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    }
+}
+
+
+
 # ------------------------- хэндлеры -------------------------
 @app.on_message(filters.command("start"))
 async def start(_, message):
@@ -151,4 +162,5 @@ async def cleanup_messages(_, message):
 # ------------------------- запуск -------------------------
 if __name__ == "__main__":
     app.run()
+
 
