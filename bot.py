@@ -35,9 +35,9 @@ class SafeClient(Client):
                     raise
         raise RuntimeError("Не удалось синхронизировать msg_id с Telegram")
 
-# ------------------------- инициализация клиента -------------------------
+# ------------------------- ИЗМЕНЕНО: новое имя сессии -------------------------
 app = SafeClient(
-    "fast_bot",
+    "video_bot_new_session_2024",  # ⬅️ ИЗМЕНИЛ ИМЯ СЕССИИ!
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
@@ -93,7 +93,7 @@ def get_instagram_url(url: str) -> str:
         "quiet": True,
         "skip_download": True,
         "format": "best[ext=mp4]/best",
-        "cookiefile": "cookies.txt",  # ✅ ИСПРАВЛЕНО: cookies -> cookiefile
+        "cookiefile": "cookies.txt",
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
@@ -114,7 +114,7 @@ def download_instagram_video(url: str, out_path: str) -> str:
     ydl_opts = {
         "outtmpl": os.path.join(out_path, "%(title).50s.%(ext)s"),
         "format": "best[ext=mp4]/best",
-        "cookiefile": "cookies.txt",  # ✅ ИСПРАВЛЕНО: cookies -> cookiefile
+        "cookiefile": "cookies.txt",
         "quiet": True,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -214,14 +214,22 @@ async def cleanup_messages(_, message):
 
 # ------------------------- запуск -------------------------
 if __name__ == "__main__":
+    # Удаляем старые файлы сессии перед запуском
+    old_sessions = ["fast_bot.session", "fast_bot.session-journal"]
+    for session_file in old_sessions:
+        if os.path.exists(session_file):
+            try:
+                os.remove(session_file)
+                logger.info(f"🗑️ Удален старый файл сессии: {session_file}")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить {session_file}: {e}")
+    
     # Проверяем cookies при запуске
     if os.path.exists("cookies.txt"):
         logger.info("✅ Файл cookies.txt найден - Instagram доступен")
     else:
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
+    logger.info("🚀 Запуск бота с новой сессией...")
     app.run()
-
-
-
 
