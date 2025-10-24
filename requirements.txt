@@ -1,6 +1,6 @@
-tgcrypto
-aiohttp
-telethon
+requests
 yt-dlp
 pyrogram
-
+aiohttp
+tgcrypto
+python-dotenv
