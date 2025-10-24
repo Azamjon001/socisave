@@ -1,1 +1,17 @@
+# Конфиденциальные файлы
+cookies.txt
+.env
+config.py
 
+# Файлы Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Логи
+*.log
+
+# Временные файлы
+*.tmp
+*.temp
+downloads/
