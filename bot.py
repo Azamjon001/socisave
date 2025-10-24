@@ -12,7 +12,7 @@ from pyrogram.errors import BadRequest, BadMsgNotification
 
 API_ID = 29683541
 API_HASH = "3a9d6a1205003b0145bc9b6b8d8e1193"
-BOT_TOKEN = "6788128988:AAFlWqJVoJKjBTp0eralGvxDo_BJBwBb-VU"
+BOT_TOKEN = "6788128988:AAEMmCSafiiEqtS5UWQQxfo--W0On7B6Q08"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -221,5 +221,6 @@ if __name__ == "__main__":
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
     app.run()
+
 
 
