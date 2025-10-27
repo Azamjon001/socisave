@@ -1,3 +1,4 @@
 tgcrypto
 yt-dlp
 pyrogram
+requests
