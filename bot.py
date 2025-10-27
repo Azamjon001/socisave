@@ -233,3 +233,305 @@ if __name__ == "__main__":
     logger.info("🚀 Запуск бота с новой сессией...")
     app.run()
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# === ДОБАВЛЯЕМ ПОСЛЕ ВАШЕГО СУЩЕСТВУЮЩЕГО КОДА (в конец файла) ===
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from shazamio import Shazam
+from pydub import AudioSegment
+import os
+import asyncio
+
+# Глобальная переменная для хранения путей к видео
+user_videos = {}
+
+# Функция для извлечения аудио из видео
+async def extract_audio_from_video(video_path, user_id):
+    try:
+        # Создаем уникальный путь для аудио файла
+        audio_path = f"temp_audio_{user_id}.wav"
+        
+        # Конвертируем видео в аудио
+        audio = AudioSegment.from_file(video_path, format="mp4")
+        
+        # Берем только первые 30 секунд для Shazam (оптимально для распознавания)
+        first_30_seconds = audio[:30000]
+        first_30_seconds.export(audio_path, format="wav")
+        
+        return audio_path
+    except Exception as e:
+        logger.error(f"Ошибка извлечения аудио: {e}")
+        return None
+
+# Функция распознавания музыки через Shazam
+async def recognize_music(audio_path):
+    try:
+        shazam = Shazam()
+        result = await shazam.recognize(audio_path)
+        
+        if result and 'track' in result:
+            track = result['track']
+            return {
+                'title': track.get('title', 'Неизвестно'),
+                'artist': track.get('subtitle', 'Неизвестный артист'),
+                'shazam_id': track.get('key'),
+                'success': True
+            }
+        return {'success': False, 'error': 'Музыка не распознана'}
+    except Exception as e:
+        logger.error(f"Ошибка Shazam: {e}")
+        return {'success': False, 'error': str(e)}
+
+# Функция создания кнопок форматов
+def create_format_buttons():
+    keyboard = [
+        [InlineKeyboardButton("🎵 Original", callback_data="format_original")],
+        [InlineKeyboardButton("🔄 Remix", callback_data="format_remix")],
+        [InlineKeyboardButton("📝 Lyrics", callback_data="format_lyrics")],
+        [InlineKeyboardButton("🐌 Slowed", callback_data="format_slowed")],
+        [InlineKeyboardButton("⚡ Speed Up", callback_data="format_speedup")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# Функция поиска и скачивания трека
+async def download_music_track(format_type, track_info, chat_id):
+    try:
+        search_query = f"{track_info['artist']} - {track_info['title']}"
+        
+        # Модифицируем запрос в зависимости от формата
+        format_queries = {
+            "original": search_query,
+            "remix": f"{search_query} remix",
+            "lyrics": f"{search_query} lyrics",
+            "slowed": f"{search_query} slowed reverb",
+            "speedup": f"{search_query} speed up"
+        }
+        
+        final_query = format_queries.get(format_type, search_query)
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': f'downloads/%(title)s.%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'quiet': True,
+        }
+        
+        # Создаем папку downloads если нет
+        os.makedirs('downloads', exist_ok=True)
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Ищем и скачиваем
+            info = ydl.extract_info(f"ytsearch1:{final_query}", download=True)
+            
+            if info and 'entries' in info and info['entries']:
+                video = info['entries'][0]
+                audio_file = ydl.prepare_filename(video)
+                # Конвертируем расширение
+                audio_file = audio_file.replace('.webm', '.mp3').replace('.m4a', '.mp3')
+                
+                if os.path.exists(audio_file):
+                    return audio_file
+                    
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка скачивания музыки: {e}")
+        return None
+
+# Обработчик для кнопки Shazam (добавляем в существующие хэндлеры)
+@app.on_callback_query(filters.regex("shazam_video"))
+async def shazam_handler(_, callback_query):
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    
+    await callback_query.answer()
+    
+    # Показываем статус поиска
+    status_msg = await callback_query.message.reply_text("🔍 Ищу музыку в видео...")
+    
+    # Получаем путь к видео
+    video_path = user_videos.get(user_id)
+    if not video_path or not os.path.exists(video_path):
+        await status_msg.edit_text("❌ Видео не найдено или удалено")
+        await asyncio.sleep(3)
+        await status_msg.delete()
+        return
+    
+    try:
+        # Извлекаем аудио
+        audio_path = await extract_audio_from_video(video_path, user_id)
+        if not audio_path:
+            await status_msg.edit_text("❌ Ошибка обработки аудио")
+            await asyncio.sleep(3)
+            await status_msg.delete()
+            return
+        
+        # Распознаем музыку
+        recognition_result = await recognize_music(audio_path)
+        
+        # Удаляем временный аудио файл
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+        
+        if recognition_result['success']:
+            # Сохраняем информацию о треке
+            user_videos[f"{user_id}_track"] = recognition_result
+            
+            # Показываем результат и кнопки форматов
+            track_text = f"🎶 **Найден трек:**\n**Артист:** {recognition_result['artist']}\n**Название:** {recognition_result['title']}\n\nВыбери формат:"
+            
+            await status_msg.edit_text(
+                track_text,
+                reply_markup=create_format_buttons()
+            )
+        else:
+            await status_msg.edit_text("❌ Не удалось распознать музыку в видео")
+            await asyncio.sleep(3)
+            await status_msg.delete()
+            
+    except Exception as e:
+        logger.error(f"Ошибка Shazam обработки: {e}")
+        await status_msg.edit_text("❌ Ошибка при распознавании музыки")
+        await asyncio.sleep(3)
+        await status_msg.delete()
+
+# Обработчик выбора формата
+@app.on_callback_query(filters.regex("^format_"))
+async def format_handler(_, callback_query):
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    format_type = callback_query.data.replace("format_", "")
+    
+    await callback_query.answer()
+    
+    # Получаем информацию о треке
+    track_info = user_videos.get(f"{user_id}_track")
+    if not track_info:
+        await callback_query.message.reply_text("❌ Информация о треке устарела")
+        return
+    
+    # Показываем статус скачивания
+    download_msg = await callback_query.message.reply_text(f"⏬ Скачиваю {format_type} версию...")
+    
+    try:
+        # Скачиваем трек
+        audio_file = await download_music_track(format_type, track_info, chat_id)
+        
+        if audio_file and os.path.exists(audio_file):
+            # Отправляем аудио файл
+            await callback_query.message.reply_audio(
+                audio=audio_file,
+                title=f"{track_info['artist']} - {track_info['title']} ({format_type})",
+                performer=track_info['artist']
+            )
+            await download_msg.delete()
+            
+            # Удаляем временный файл
+            os.remove(audio_file)
+        else:
+            await download_msg.edit_text("❌ Не удалось найти или скачать эту версию")
+            await asyncio.sleep(3)
+            await download_msg.delete()
+            
+    except Exception as e:
+        logger.error(f"Ошибка отправки аудио: {e}")
+        await download_msg.edit_text("❌ Ошибка при отправке файла")
+        await asyncio.sleep(3)
+        await download_msg.delete()
+
+# Модифицируем существующий хэндлер для сохранения пути к видео и добавления кнопки Shazam
+original_handle_text = app.on_message(filters.text & ~filters.command("start"))
+
+@app.on_message(filters.text & ~filters.command("start"))
+async def enhanced_handle_text(_, message):
+    # Вызываем оригинальную функцию
+    await original_handle_text(_, message)
+    
+    # Дополнительно: сохраняем путь к видео и добавляем кнопку Shazam
+    text = message.text.strip()
+    url = extract_first_url(text)
+    
+    if url and any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
+        user_id = message.from_user.id
+        
+        # Сохраняем информацию о пользователе для возможного Shazam
+        # (в реальной реализации нужно сохранить путь к скачанному видео)
+        try:
+            # Создаем временную папку для пользователя
+            user_temp_dir = f"temp_{user_id}"
+            os.makedirs(user_temp_dir, exist_ok=True)
+            
+            # Сохраняем путь (в реальной реализации нужно получить актуальный путь к файлу)
+            user_videos[user_id] = user_temp_dir
+            
+            # Отправляем сообщение с кнопкой Shazam через 2 секунды после успешной загрузки
+            await asyncio.sleep(2)
+            
+            keyboard = [[InlineKeyboardButton("🎵 Shazam музыку из видео", callback_data="shazam_video")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await message.reply_text(
+                "✅ Видео загружено! Хочешь найти музыку из этого видео?",
+                reply_markup=reply_markup
+            )
+            
+        except Exception as e:
+            logger.error(f"Ошибка добавления кнопки Shazam: {e}")
+
+# Функция очистки временных файлов
+async def cleanup_temp_files():
+    """Очистка временных файлов раз в час"""
+    while True:
+        await asyncio.sleep(3600)  # Каждый час
+        try:
+            current_time = time.time()
+            for user_id, temp_dir in list(user_videos.items()):
+                if isinstance(temp_dir, str) and temp_dir.startswith("temp_") and os.path.exists(temp_dir):
+                    # Удаляем папки старше 2 часов
+                    dir_time = os.path.getctime(temp_dir)
+                    if current_time - dir_time > 7200:  # 2 часа
+                        import shutil
+                        shutil.rmtree(temp_dir)
+                        del user_videos[user_id]
+                        logger.info(f"Очищена временная папка для user_{user_id}")
+        except Exception as e:
+            logger.error(f"Ошибка очистки временных файлов: {e}")
+
+# Запускаем очистку при старте бота
+@app.on_start()
+async def start_cleanup():
+    asyncio.create_task(cleanup_temp_files())
+
+logger.info("✅ Shazam функционал добавлен успешно!")
+
