@@ -363,7 +363,7 @@ if __name__ == "__main__":
                 os.remove(session_file)
                 logger.info(f"🗑️ Удален старый файл сессии: {session_file}")
             except Exception as e:
-                logger.warning(f"Не удалось удалить {session_file}: {e")
+                logger.warning(f"Не удалось удалить {session_file}: {e}")
     
     # Проверяем cookies при запуске
     if os.path.exists("cookies.txt"):
@@ -373,5 +373,3 @@ if __name__ == "__main__":
     
     logger.info("🚀 Запуск бота с исправленной логикой очистки...")
     app.run()
-
-
