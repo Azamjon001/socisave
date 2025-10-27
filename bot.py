@@ -144,50 +144,32 @@ async def cleanup_user_message(message, delay: int = 3):
 
 @app.on_message(filters.command("start"))
 async def start(_, message):
-    """Обработчик команды /start - НЕ УДАЛЯЕТСЯ"""
-    user_id = message.from_user.id
-    
-    # Проверяем, не обрабатывается ли уже сообщение
-    if user_id in user_processing and user_processing[user_id].get('start'):
-        return
-    
-    # Помечаем как обрабатываемое
-    if user_id not in user_processing:
-        user_processing[user_id] = {}
-    user_processing[user_id]['start'] = True
-    
-    try:
-        welcome_msg = await message.reply_text(
-            "Привет! 👋\n\n"
-            "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
-            "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
-        )
-        
-        # КОМАНДА /start НЕ УДАЛЯЕТСЯ - убрали cleanup_user_message
-        
-    finally:
-        # Снимаем блокировку
-        if user_id in user_processing:
-            user_processing[user_id]['start'] = False
+    """Обработчик команды /start"""
+    welcome_msg = await message.reply_text(
+        "Привет! 👋\n\n"
+        "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
+        "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
+        "⚡ Бот автоматически удалит твою ссылку после скачивания!"
+    )
 
 @app.on_message(filters.command(["help", "info"]))
 async def help_command(_, message):
-    """Обработчик других команд - НЕ УДАЛЯЮТСЯ"""
+    """Обработчик других команд"""
     help_text = (
         "🤖 **Помощь по боту**\n\n"
         "📥 Просто отправь ссылку на:\n"
         "• Instagram видео/реельс\n" 
         "• YouTube видео\n\n"
-        "📌 Бот автоматически удалит твои сообщения после обработки\n"
+        "📌 Бот автоматически удалит твою ссылку после скачивания\n"
         "⚡ Скачивание работает быстро и бесплатно!"
     )
     await message.reply_text(help_text)
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(_, message):
-    """Обработчик ВСЕХ текстовых сообщений от пользователей"""
+    """Обработчик текстовых сообщений от пользователей - ТОЛЬКО ДЛЯ ССЫЛОК"""
     
-    # Пропускаем команды (они обрабатываются отдельно и НЕ УДАЛЯЮТСЯ)
+    # Пропускаем команды (они обрабатываются отдельно)
     if message.text and message.text.startswith('/'):
         return
     
@@ -197,26 +179,20 @@ async def handle_text(_, message):
     # Извлекаем URL
     url = extract_first_url(text)
     if not url or not any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
-        # Удаляем сообщение если это не ссылка
-        asyncio.create_task(cleanup_user_message(message, delay=2))
+        # НЕ удаляем обычные текстовые сообщения, только ссылки
         return
 
     # Проверяем, не обрабатывается ли уже запрос от этого пользователя
     if user_id in user_processing and user_processing[user_id].get('processing'):
         temp_msg = await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
-        asyncio.create_task(cleanup_user_message(message))
-        # Удаляем временное сообщение через 3 секунды
         await asyncio.sleep(3)
         await temp_msg.delete()
         return
 
     # Помечаем как обрабатываемое
-    if user_id not in user_processing:
-        user_processing[user_id] = {}
-    user_processing[user_id]['processing'] = True
+    user_processing[user_id] = {'processing': True}
     
     status = None
-    task_msg = None
     
     try:
         url = normalize_url(url)
@@ -224,25 +200,23 @@ async def handle_text(_, message):
         
         if "youtube" in url or "youtu.be" in url:
             # YouTube обработка
-            task_msg = await message.reply_text("🎬 Получение YouTube видео...")
-            
             try:
                 # Пытаемся отправить прямую ссылку
                 direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
-                video_message = await message.reply_video(
+                await message.reply_video(
                     direct_url, 
                     caption="📥 YouTube видео скачано через @azams_bot"
                 )
                 logger.info("✅ YouTube видео отправлено через прямую ссылку")
                 
-            except BadRequest:
+            except Exception as e:
                 # Если прямая ссылка не работает, скачиваем файл
                 await status.edit_text("📥 Скачиваю видео...")
                 tmp_dir = tempfile.mkdtemp()
                 
                 try:
                     file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
-                    video_message = await message.reply_video(
+                    await message.reply_video(
                         file_path, 
                         caption="📥 YouTube видео скачано через @azams_bot"
                     )
@@ -253,16 +227,13 @@ async def handle_text(_, message):
                         os.remove(file_path)
                     os.rmdir(tmp_dir)
                     
-                except Exception as e:
+                except Exception as download_error:
                     # Очистка при ошибке
                     if os.path.exists(tmp_dir):
                         for file in os.listdir(tmp_dir):
                             os.remove(os.path.join(tmp_dir, file))
                         os.rmdir(tmp_dir)
-                    raise e
-                    
-            if task_msg:
-                await task_msg.delete()
+                    raise download_error
                 
         elif "instagram.com" in url:
             # Instagram обработка
@@ -270,15 +241,13 @@ async def handle_text(_, message):
                 await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
                 await asyncio.sleep(5)
                 await status.delete()
-                # Все равно удаляем сообщение пользователя
-                await message.delete()
                 return
                 
             try:
                 # Сначала пытаемся получить прямую ссылку
                 direct_url = await asyncio.to_thread(get_instagram_url, url)
                 if direct_url:
-                    video_message = await message.reply_video(
+                    await message.reply_video(
                         direct_url, 
                         caption="📥 Instagram видео скачано через @azams_bot"
                     )
@@ -293,7 +262,7 @@ async def handle_text(_, message):
                 
                 try:
                     file_path = await asyncio.to_thread(download_instagram_video, url, tmp_dir)
-                    video_message = await message.reply_video(
+                    await message.reply_video(
                         file_path,
                         caption="📥 Instagram видео скачано через @azams_bot"
                     )
@@ -312,11 +281,8 @@ async def handle_text(_, message):
                         os.rmdir(tmp_dir)
                     raise download_error
 
-        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем только сообщение пользователя и статус
+        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем только сообщение пользователя со ссылкой
         await message.delete()
-        if status:
-            await status.delete()
-            
         logger.info(f"✅ Обработка завершена для пользователя {user_id}")
 
     except Exception as e:
@@ -330,42 +296,17 @@ async def handle_text(_, message):
             except:
                 pass
                 
-        # Все равно удаляем сообщение пользователя даже при ошибке
-        try:
-            await message.delete()
-        except:
-            pass
-            
+    finally:
+        # Удаляем статус сообщение
         if status:
             try:
                 await status.delete()
             except:
                 pass
                 
-    finally:
         # Снимаем блокировку обработки
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
-
-@app.on_message(filters.private & (filters.voice | filters.document | filters.audio | filters.sticker | filters.animation | filters.photo))
-async def cleanup_media_messages(_, message):
-    """Удаляет медиа сообщения от пользователей"""
-    asyncio.create_task(cleanup_user_message(message))
-
-@app.on_message(filters.private & filters.text)
-async def handle_all_text_messages(_, message):
-    """Удаляет все текстовые сообщения от пользователей, которые не являются командами или ссылками"""
-    # Пропускаем команды (они НЕ УДАЛЯЮТСЯ)
-    if message.text and message.text.startswith('/'):
-        return
-    
-    # Пропускаем сообщения со ссылками (они обрабатываются в handle_text)
-    url = extract_first_url(message.text)
-    if url and any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
-        return
-    
-    # Удаляем все остальные текстовые сообщения
-    asyncio.create_task(cleanup_user_message(message, delay=2))
 
 # ------------------------- ЗАПУСК -------------------------
 if __name__ == "__main__":
@@ -385,10 +326,8 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
-    logger.info("🚀 Запуск бота с исправленной логикой очистки...")
-    logger.info("📝 Бот будет удалять только сообщения пользователей, КРОМЕ КОМАНД (/start, /help, /info)")
+    logger.info("🚀 Запуск бота с исправленной логикой...")
+    logger.info("📝 Бот будет удалять ТОЛЬКО ссылки после скачивания, остальные сообщения остаются")
     app.run()
-
-
 
 
