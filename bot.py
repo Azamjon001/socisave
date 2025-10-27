@@ -128,25 +128,6 @@ def download_instagram_video(url: str, out_path: str) -> str:
         logger.error(f"Ошибка скачивания Instagram: {e}")
         raise
 
-def generate_task() -> str:
-    if random.random() < 0.6:
-        num1 = random.randint(100, 999)
-        num2 = random.randint(100, 999)
-        op = random.choice(["+", "-"])
-        emoji = random.choice(["🧠", "🤯", "🤔", "🧮"])
-        return f"{emoji} Пока ждёшь, попробуй решить:\n\n{num1} {op} {num2} = ?"
-    else:
-        riddles = [
-            "🧩 Что тяжелее: килограмм ваты или килограмм железа?",
-            "🤔 Сколько будет углов у квадрата, если отрезать один угол?",
-            "🔄 Что всегда идёт, но никогда не приходит?",
-            "🌍 У отца три сына: Чук, Гек и ... ?",
-            "🔢 2 отца и 2 сына съели 3 яблока, и каждому досталось по целому. Как это возможно?",
-            "🔢 Продолжи ряд: 2, 4, 6, 8, ... ?",
-            "🧮 Что больше: половина от 8 или треть от 9?",
-        ]
-        return random.choice(riddles)
-
 # ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ОЧИСТКИ -------------------------
 user_processing = {}  # Храним статус обработки для каждого пользователя
 
@@ -180,7 +161,6 @@ async def start(_, message):
             "Привет! 👋\n\n"
             "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
             "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
-            "⚠️ Для Instagram требуется файл cookies.txt"
         )
         
         # Удаляем только сообщение пользователя, НЕ сообщение бота
@@ -191,9 +171,9 @@ async def start(_, message):
         if user_id in user_processing:
             user_processing[user_id]['start'] = False
 
-@app.on_message(filters.text)
+@app.on_message(filters.text & filters.private)
 async def handle_text(_, message):
-    """Обработчик ВСЕХ текстовых сообщений"""
+    """Обработчик ВСЕХ текстовых сообщений от пользователей"""
     
     # Пропускаем команды (они обрабатываются отдельно)
     if message.text and message.text.startswith('/'):
@@ -206,7 +186,7 @@ async def handle_text(_, message):
     url = extract_first_url(text)
     if not url or not any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
         # Удаляем сообщение если это не ссылка
-        asyncio.create_task(cleanup_user_message(message))
+        asyncio.create_task(cleanup_user_message(message, delay=2))
         return
 
     # Проверяем, не обрабатывается ли уже запрос от этого пользователя
@@ -232,7 +212,7 @@ async def handle_text(_, message):
         
         if "youtube" in url or "youtu.be" in url:
             # YouTube обработка
-            task_msg = await message.reply_text(generate_task())
+            task_msg = await message.reply_text("🎬 Получение YouTube видео...")
             
             try:
                 # Пытаемся отправить прямую ссылку
@@ -278,18 +258,25 @@ async def handle_text(_, message):
                 await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
                 await asyncio.sleep(5)
                 await status.delete()
+                # Все равно удаляем сообщение пользователя
+                await message.delete()
                 return
                 
             try:
+                # Сначала пытаемся получить прямую ссылку
                 direct_url = await asyncio.to_thread(get_instagram_url, url)
-                video_message = await message.reply_video(
-                    direct_url, 
-                    caption="📥 Instagram видео скачано через @azams_bot"
-                )
-                logger.info("✅ Instagram видео отправлено")
+                if direct_url:
+                    video_message = await message.reply_video(
+                        direct_url, 
+                        caption="📥 Instagram видео скачано через @azams_bot"
+                    )
+                    logger.info("✅ Instagram видео отправлено через прямую ссылку")
+                else:
+                    raise Exception("Не удалось получить прямую ссылку")
                 
             except Exception as e:
-                await status.edit_text("📥 Прямая ссылка не сработала, скачиваю файл...")
+                logger.warning(f"Прямая ссылка не сработала: {e}, скачиваю файл...")
+                await status.edit_text("📥 Скачиваю видео...")
                 tmp_dir = tempfile.mkdtemp()
                 
                 try:
@@ -348,10 +335,25 @@ async def handle_text(_, message):
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
 
-@app.on_message(filters.voice | filters.document | filters.audio | filters.sticker | filters.animation)
+@app.on_message(filters.private & (filters.voice | filters.document | filters.audio | filters.sticker | filters.animation | filters.photo))
 async def cleanup_media_messages(_, message):
-    """Удаляет медиа сообщения от пользователей (кроме фото)"""
+    """Удаляет медиа сообщения от пользователей"""
     asyncio.create_task(cleanup_user_message(message))
+
+@app.on_message(filters.private & filters.text)
+async def handle_all_text_messages(_, message):
+    """Удаляет все текстовые сообщения от пользователей, которые не являются командами или ссылками"""
+    # Пропускаем команды
+    if message.text and message.text.startswith('/'):
+        return
+    
+    # Пропускаем сообщения со ссылками (они обрабатываются в handle_text)
+    url = extract_first_url(message.text)
+    if url and any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
+        return
+    
+    # Удаляем все остальные текстовые сообщения
+    asyncio.create_task(cleanup_user_message(message, delay=2))
 
 # ------------------------- ЗАПУСК -------------------------
 if __name__ == "__main__":
@@ -372,4 +374,5 @@ if __name__ == "__main__":
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
     logger.info("🚀 Запуск бота с исправленной логикой очистки...")
+    logger.info("📝 Бот будет удалять только сообщения пользователей, сохраняя свои сообщения")
     app.run()
