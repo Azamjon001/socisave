@@ -176,14 +176,14 @@ async def start(_, message):
     user_processing[user_id]['start'] = True
     
     try:
-        await message.reply_text(
+        welcome_msg = await message.reply_text(
             "Привет! 👋\n\n"
             "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
             "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
             "⚠️ Для Instagram требуется файл cookies.txt"
         )
         
-        # Удаляем сообщение пользователя через 3 секунды
+        # Удаляем только сообщение пользователя, НЕ сообщение бота
         asyncio.create_task(cleanup_user_message(message))
         
     finally:
@@ -191,9 +191,14 @@ async def start(_, message):
         if user_id in user_processing:
             user_processing[user_id]['start'] = False
 
-@app.on_message(filters.text & ~filters.command("start"))
+@app.on_message(filters.text)
 async def handle_text(_, message):
-    """Обработчик текстовых сообщений со ссылками"""
+    """Обработчик ВСЕХ текстовых сообщений"""
+    
+    # Пропускаем команды (они обрабатываются отдельно)
+    if message.text and message.text.startswith('/'):
+        return
+    
     user_id = message.from_user.id
     text = message.text.strip()
     
@@ -206,8 +211,11 @@ async def handle_text(_, message):
 
     # Проверяем, не обрабатывается ли уже запрос от этого пользователя
     if user_id in user_processing and user_processing[user_id].get('processing'):
-        await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
+        temp_msg = await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
         asyncio.create_task(cleanup_user_message(message))
+        # Удаляем временное сообщение через 3 секунды
+        await asyncio.sleep(3)
+        await temp_msg.delete()
         return
 
     # Помечаем как обрабатываемое
@@ -269,6 +277,7 @@ async def handle_text(_, message):
             if not os.path.exists("cookies.txt"):
                 await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
                 await asyncio.sleep(5)
+                await status.delete()
                 return
                 
             try:
@@ -304,7 +313,7 @@ async def handle_text(_, message):
                         os.rmdir(tmp_dir)
                     raise download_error
 
-        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем сообщение пользователя и статус
+        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем только сообщение пользователя и статус
         await message.delete()
         if status:
             await status.delete()
@@ -339,11 +348,9 @@ async def handle_text(_, message):
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
 
-@app.on_message(filters.voice | filters.document | filters.audio | filters.sticker | filters.animation | filters.photo)
+@app.on_message(filters.voice | filters.document | filters.audio | filters.sticker | filters.animation)
 async def cleanup_media_messages(_, message):
-    """Удаляет все медиа сообщения от пользователей"""
-    if message.photo:
-        return
+    """Удаляет медиа сообщения от пользователей (кроме фото)"""
     asyncio.create_task(cleanup_user_message(message))
 
 # ------------------------- ЗАПУСК -------------------------
@@ -356,7 +363,7 @@ if __name__ == "__main__":
                 os.remove(session_file)
                 logger.info(f"🗑️ Удален старый файл сессии: {session_file}")
             except Exception as e:
-                logger.warning(f"Не удалось удалить {session_file}: {e}")
+                logger.warning(f"Не удалось удалить {session_file}: {e")
     
     # Проверяем cookies при запуске
     if os.path.exists("cookies.txt"):
@@ -366,3 +373,5 @@ if __name__ == "__main__":
     
     logger.info("🚀 Запуск бота с исправленной логикой очистки...")
     app.run()
+
+
