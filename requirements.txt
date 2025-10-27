@@ -1,12 +1,3 @@
+tgcrypto
 yt-dlp
-fastapi
-uvicorn
-aiofiles
-python-multipart
-httpx
-asyncio-throttle
-aiocache
-pydantic
-redis
-celery
-flower
+pyrogram
