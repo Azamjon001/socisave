@@ -1,6 +1,12 @@
-requests
 yt-dlp
-pyrogram
-aiohttp
-tgcrypto
-python-dotenv
+fastapi
+uvicorn
+aiofiles
+python-multipart
+httpx
+asyncio-throttle
+aiocache
+pydantic
+redis
+celery
+flower
