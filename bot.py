@@ -37,7 +37,7 @@ class SafeClient(Client):
 
 # ------------------------- ИЗМЕНЕНО: новое имя сессии -------------------------
 app = SafeClient(
-    "video_bot_new_session_2024",  # ⬅️ ИЗМЕНИЛ ИМЯ СЕССИИ!
+    "video_bot_new_session_2024",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
@@ -147,43 +147,125 @@ def generate_task() -> str:
         ]
         return random.choice(riddles)
 
-# ------------------------- хэндлеры -------------------------
+# ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ОЧИСТКИ -------------------------
+user_processing = {}  # Храним статус обработки для каждого пользователя
+
+async def cleanup_user_message(message, delay: int = 3):
+    """Удаляет сообщение пользователя после задержки"""
+    try:
+        await asyncio.sleep(delay)
+        await message.delete()
+        logger.info(f"🗑️ Удалено сообщение пользователя {message.from_user.id}")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение: {e}")
+
+# ------------------------- ИСПРАВЛЕННЫЕ ХЭНДЛЕРЫ -------------------------
+
 @app.on_message(filters.command("start"))
 async def start(_, message):
-    await message.reply_text(
-        "Привет! 👋\n\n"
-        "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
-        "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
-        "⚠️ Для Instagram требуется файл cookies.txt"
-    )
+    """Обработчик команды /start - ОДИН раз"""
+    user_id = message.from_user.id
+    
+    # Проверяем, не обрабатывается ли уже сообщение
+    if user_id in user_processing and user_processing[user_id].get('start'):
+        return
+    
+    # Помечаем как обрабатываемое
+    if user_id not in user_processing:
+        user_processing[user_id] = {}
+    user_processing[user_id]['start'] = True
+    
+    try:
+        await message.reply_text(
+            "Привет! 👋\n\n"
+            "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
+            "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
+            "⚠️ Для Instagram требуется файл cookies.txt"
+        )
+        
+        # Удаляем сообщение пользователя через 3 секунды
+        asyncio.create_task(cleanup_user_message(message))
+        
+    finally:
+        # Снимаем блокировку
+        if user_id in user_processing:
+            user_processing[user_id]['start'] = False
 
 @app.on_message(filters.text & ~filters.command("start"))
 async def handle_text(_, message):
+    """Обработчик текстовых сообщений со ссылками"""
+    user_id = message.from_user.id
     text = message.text.strip()
+    
+    # Извлекаем URL
     url = extract_first_url(text)
     if not url or not any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
-        await message.delete()
+        # Удаляем сообщение если это не ссылка
+        asyncio.create_task(cleanup_user_message(message))
         return
 
-    status = await message.reply_text("⏳ Обработка видео...")
+    # Проверяем, не обрабатывается ли уже запрос от этого пользователя
+    if user_id in user_processing and user_processing[user_id].get('processing'):
+        await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
+        asyncio.create_task(cleanup_user_message(message))
+        return
+
+    # Помечаем как обрабатываемое
+    if user_id not in user_processing:
+        user_processing[user_id] = {}
+    user_processing[user_id]['processing'] = True
+    
+    status = None
+    task_msg = None
+    
     try:
         url = normalize_url(url)
+        status = await message.reply_text("⏳ Обработка видео...")
         
         if "youtube" in url or "youtu.be" in url:
+            # YouTube обработка
             task_msg = await message.reply_text(generate_task())
-            try:
-                direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
-                await message.reply_video(direct_url, caption="📥 YouTube видео через @azams_bot")
-            except BadRequest:
-                tmp_dir = tempfile.mkdtemp()
-                file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
-                await message.reply_video(file_path, caption="📥 YouTube видео через @azams_bot")
-                os.remove(file_path)
-                os.rmdir(tmp_dir)
-            await task_msg.delete()
             
+            try:
+                # Пытаемся отправить прямую ссылку
+                direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
+                video_message = await message.reply_video(
+                    direct_url, 
+                    caption="📥 YouTube видео скачано через @azams_bot"
+                )
+                logger.info("✅ YouTube видео отправлено через прямую ссылку")
+                
+            except BadRequest:
+                # Если прямая ссылка не работает, скачиваем файл
+                await status.edit_text("📥 Скачиваю видео...")
+                tmp_dir = tempfile.mkdtemp()
+                
+                try:
+                    file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
+                    video_message = await message.reply_video(
+                        file_path, 
+                        caption="📥 YouTube видео скачано через @azams_bot"
+                    )
+                    logger.info("✅ YouTube видео отправлено как файл")
+                    
+                    # Очистка временных файлов
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    os.rmdir(tmp_dir)
+                    
+                except Exception as e:
+                    # Очистка при ошибке
+                    if os.path.exists(tmp_dir):
+                        for file in os.listdir(tmp_dir):
+                            os.remove(os.path.join(tmp_dir, file))
+                        os.rmdir(tmp_dir)
+                    raise e
+                    
+            if task_msg:
+                await task_msg.delete()
+                
         elif "instagram.com" in url:
-            # ✅ Instagram с обработкой ошибок cookies
+            # Instagram обработка
             if not os.path.exists("cookies.txt"):
                 await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
                 await asyncio.sleep(5)
@@ -191,28 +273,80 @@ async def handle_text(_, message):
                 
             try:
                 direct_url = await asyncio.to_thread(get_instagram_url, url)
-                await message.reply_video(direct_url, caption="📥 Instagram видео через @azams_bot")
+                video_message = await message.reply_video(
+                    direct_url, 
+                    caption="📥 Instagram видео скачано через @azams_bot"
+                )
+                logger.info("✅ Instagram видео отправлено")
+                
             except Exception as e:
-                await status.edit_text(f"❌ Ошибка Instagram: {e}")
-                await asyncio.sleep(5)
-                return
+                await status.edit_text("📥 Прямая ссылка не сработала, скачиваю файл...")
+                tmp_dir = tempfile.mkdtemp()
+                
+                try:
+                    file_path = await asyncio.to_thread(download_instagram_video, url, tmp_dir)
+                    video_message = await message.reply_video(
+                        file_path,
+                        caption="📥 Instagram видео скачано через @azams_bot"
+                    )
+                    logger.info("✅ Instagram видео отправлено как файл")
+                    
+                    # Очистка временных файлов
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    os.rmdir(tmp_dir)
+                    
+                except Exception as download_error:
+                    # Очистка при ошибке
+                    if os.path.exists(tmp_dir):
+                        for file in os.listdir(tmp_dir):
+                            os.remove(os.path.join(tmp_dir, file))
+                        os.rmdir(tmp_dir)
+                    raise download_error
 
+        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем сообщение пользователя и статус
         await message.delete()
-        await status.delete()
-        
+        if status:
+            await status.delete()
+            
+        logger.info(f"✅ Обработка завершена для пользователя {user_id}")
+
     except Exception as e:
-        await status.edit_text(f"❌ Ошибка: {e}")
-        await asyncio.sleep(5)
-        await status.delete()
+        logger.error(f"❌ Ошибка обработки для пользователя {user_id}: {e}")
+        
+        if status:
+            try:
+                error_msg = await message.reply_text(f"❌ Ошибка: {str(e)}")
+                await asyncio.sleep(5)
+                await error_msg.delete()
+            except:
+                pass
+                
+        # Все равно удаляем сообщение пользователя даже при ошибке
+        try:
+            await message.delete()
+        except:
+            pass
+            
+        if status:
+            try:
+                await status.delete()
+            except:
+                pass
+                
+    finally:
+        # Снимаем блокировку обработки
+        if user_id in user_processing:
+            user_processing[user_id]['processing'] = False
 
 @app.on_message(filters.voice | filters.document | filters.audio | filters.sticker | filters.animation | filters.photo)
-async def cleanup_messages(_, message):
+async def cleanup_media_messages(_, message):
+    """Удаляет все медиа сообщения от пользователей"""
     if message.photo:
         return
-    await message.delete()
-    await app.unpin_chat_message(chat_id=message.chat.id)
+    asyncio.create_task(cleanup_user_message(message))
 
-# ------------------------- запуск -------------------------
+# ------------------------- ЗАПУСК -------------------------
 if __name__ == "__main__":
     # Удаляем старые файлы сессии перед запуском
     old_sessions = ["fast_bot.session", "fast_bot.session-journal"]
@@ -230,6 +364,5 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
-    logger.info("🚀 Запуск бота с новой сессией...")
+    logger.info("🚀 Запуск бота с исправленной логикой очистки...")
     app.run()
-
