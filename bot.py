@@ -6,6 +6,7 @@ import yt_dlp
 import re
 import time
 import random
+import requests
 from pyrogram import Client, filters
 from pyrogram.errors import BadRequest, BadMsgNotification
 from pyrogram.types import InputMediaPhoto
@@ -99,7 +100,7 @@ def download_youtube_video_best(url: str, out_path: str) -> str:
         logger.error(f"❌ Ошибка скачивания YouTube: {e}")
         raise
 
-# ------------------------- INSTAGRAM ФУНКЦИИ -------------------------
+# ------------------------- INSTAGRAM ФУНКЦИИ (ПЕРЕПИСАННЫЕ) -------------------------
 
 def check_cookies_file():
     if not os.path.exists("cookies.txt"):
@@ -108,29 +109,8 @@ def check_cookies_file():
     logger.info("✅ Файл cookies.txt найден")
     return True
 
-def get_instagram_media_info(url: str):
-    """Получаем информацию о медиа Instagram"""
-    if not check_cookies_file():
-        raise FileNotFoundError("Файл cookies.txt не найден.")
-    
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "cookiefile": "cookies.txt",
-        "ignoreerrors": True,
-        "extract_flat": False,
-    }
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info
-    except Exception as e:
-        logger.error(f"Ошибка получения информации Instagram: {e}")
-        raise
-
-def download_instagram_single_media(url: str, out_path: str):
-    """Скачиваем одиночное медиа Instagram (фото или видео)"""
+def download_instagram_simple(url: str, out_path: str):
+    """Простой метод скачивания Instagram с принудительным форматом"""
     if not check_cookies_file():
         raise FileNotFoundError("Файл cookies.txt не найден.")
     
@@ -140,115 +120,110 @@ def download_instagram_single_media(url: str, out_path: str):
         "quiet": False,
         "ignoreerrors": True,
         "retries": 3,
+        "format": "best",  # Принудительно используем лучший формат
     }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            
+            if not info:
+                raise Exception("Не удалось получить информацию о контенте")
+            
             filename = ydl.prepare_filename(info)
             
-            if not os.path.exists(filename):
-                raise Exception(f"Файл не создан: {filename}")
+            # Проверяем разные возможные имена файлов
+            possible_files = [
+                filename,
+                filename.replace('.webm', '.mp4').replace('.mkv', '.mp4'),
+                os.path.join(out_path, f"{info.get('title', 'instagram_media')}.mp4"),
+                os.path.join(out_path, f"{info.get('title', 'instagram_media')}.jpg"),
+            ]
+            
+            actual_file = None
+            for file_path in possible_files:
+                if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                    actual_file = file_path
+                    break
+            
+            if not actual_file:
+                # Ищем любой файл в папке
+                for file in os.listdir(out_path):
+                    file_path = os.path.join(out_path, file)
+                    if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                        actual_file = file_path
+                        break
+            
+            if not actual_file:
+                raise Exception("Не удалось найти скачанный файл")
                 
-            file_size = os.path.getsize(filename)
-            if file_size == 0:
-                os.remove(filename)
-                raise Exception(f"Файл пустой: {filename}")
-                
-            logger.info(f"✅ Instagram медиа скачано: {filename} ({file_size} bytes)")
-            return filename, info
+            logger.info(f"✅ Instagram медиа скачано: {actual_file}")
+            return actual_file, info
             
     except Exception as e:
         logger.error(f"Ошибка скачивания Instagram: {e}")
         raise
 
-def download_instagram_carousel(url: str, out_path: str):
-    """Скачиваем карусель Instagram (несколько фото)"""
+def download_instagram_direct(url: str, out_path: str):
+    """Прямое скачивание Instagram без сложных форматов"""
     if not check_cookies_file():
         raise FileNotFoundError("Файл cookies.txt не найден.")
     
     ydl_opts = {
-        "outtmpl": os.path.join(out_path, "%(playlist_index)s_%(title).100s.%(ext)s"),
+        "outtmpl": os.path.join(out_path, "instagram_media.%(ext)s"),
         "cookiefile": "cookies.txt",
         "quiet": False,
         "ignoreerrors": True,
-        "retries": 3,
+        "retries": 5,
+        "fragment_retries": 5,
+        "skip_unavailable_fragments": True,
+        "extract_flat": False,
     }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Скачиваем все элементы карусели
-            result = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(url, download=True)
             
-            # Получаем список скачанных файлов
-            downloaded_files = []
-            if '_type' in result and result['_type'] == 'playlist':
-                for entry in result['entries']:
-                    if entry and '_filename' in entry:
-                        filename = entry['_filename']
-                        if os.path.exists(filename):
-                            downloaded_files.append(filename)
-                            logger.info(f"✅ Скачан файл карусели: {filename}")
+            # Ищем скачанный файл
+            for file in os.listdir(out_path):
+                file_path = os.path.join(out_path, file)
+                if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                    logger.info(f"✅ Найден файл: {file_path} ({os.path.getsize(file_path)} bytes)")
+                    return file_path, info
             
-            if not downloaded_files:
-                raise Exception("Не удалось скачать файлы карусели")
-                
-            return downloaded_files, result
+            raise Exception("Не удалось найти скачанный файл")
             
     except Exception as e:
-        logger.error(f"Ошибка скачивания Instagram карусели: {e}")
+        logger.error(f"Ошибка прямого скачивания Instagram: {e}")
         raise
 
-def is_instagram_video(info):
-    """Проверяем является ли контент видео"""
-    if not info:
-        return False
+def get_instagram_media_type(file_path: str, info: dict) -> str:
+    """Определяем тип медиа по файлу и информации"""
+    if not file_path:
+        return "unknown"
     
-    # Проверяем расширение файла
-    filename = info.get('_filename', '')
-    if filename and any(filename.endswith(ext) for ext in ['.mp4', '.webm', '.mkv']):
-        return True
+    # Определяем по расширению файла
+    file_ext = file_path.lower().split('.')[-1] if '.' in file_path else ''
     
-    # Проверяем длительность
-    if info.get('duration'):
-        return True
+    if file_ext in ['mp4', 'webm', 'mkv', 'mov']:
+        return "video"
+    elif file_ext in ['jpg', 'jpeg', 'png', 'webp']:
+        return "photo"
     
-    # Проверяем форматы
-    formats = info.get('formats', [])
-    for fmt in formats:
-        if fmt.get('vcodec') != 'none':
-            return True
+    # Определяем по информации yt-dlp
+    if info:
+        duration = info.get('duration', 0)
+        if duration > 0:
+            return "video"
+        
+        formats = info.get('formats', [])
+        for fmt in formats:
+            if fmt.get('vcodec') != 'none':
+                return "video"
+            if fmt.get('acodec') != 'none' and fmt.get('vcodec') == 'none':
+                return "photo"
     
-    return False
-
-def is_instagram_photo(info):
-    """Проверяем является ли контент фото"""
-    if not info:
-        return False
-    
-    # Проверяем расширение файла
-    filename = info.get('_filename', '')
-    if filename and any(filename.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-        return True
-    
-    # Если это карусель (несколько фото)
-    if info.get('_type') == 'playlist':
-        return True
-    
-    return False
-
-def is_instagram_carousel(info):
-    """Проверяем является ли контент каруселью (несколько фото)"""
-    if not info:
-        return False
-    
-    # Проверяем тип плейлиста
-    if info.get('_type') == 'playlist':
-        entries = info.get('entries', [])
-        if len(entries) > 1:
-            return True
-    
-    return False
+    return "unknown"
 
 # ------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------
 
@@ -312,20 +287,6 @@ async def safe_send_photo(client, chat_id, file_path, caption=""):
         logger.error(f"❌ Ошибка отправки фото: {e}")
         raise
 
-async def safe_send_media_group(client, chat_id, media_list):
-    """Безопасная отправка группы медиа (для карусели)"""
-    try:
-        if len(media_list) > 10:
-            media_list = media_list[:10]  # Ограничение Telegram
-        
-        return await client.send_media_group(
-            chat_id=chat_id,
-            media=media_list
-        )
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки группы медиа: {e}")
-        raise
-
 # ------------------------- ОБРАБОТЧИКИ -------------------------
 
 @app.on_message(filters.command("start"))
@@ -340,9 +301,9 @@ async def start(client, message):
     await message.reply_text(
         "Привет! 👋\n\n"
         "📥 Отправь ссылку на:\n"
-        "• Instagram (видео, фото, карусели, рилсы)\n"
+        "• Instagram (видео, фото, рилсы)\n"
         "• YouTube (видео, Shorts)\n\n"
-        "⚡ Автоматически определяем тип контента!\n"
+        "⚡ Простое и быстрое скачивание!\n"
         "📹 Видео до 2GB | 📸 Фото до 10MB\n"
         "🔄 Бот перезапускается каждые 12 часов"
     )
@@ -360,11 +321,10 @@ async def help_command(client, message):
         "🤖 **Помощь по боту**\n\n"
         "📥 Поддерживаемые ссылки:\n"
         "• Instagram видео/рилсы\n"
-        "• Instagram одиночные фото\n"
-        "• Instagram карусели (несколько фото)\n"
+        "• Instagram фото\n"
         "• YouTube видео\n"
         "• YouTube Shorts\n\n"
-        "⚡ Автоматическое определение типа контента!\n"
+        "⚡ Просто отправь ссылку - бот сам определит тип контента!\n"
         "📹 Максимальный размер видео: 2GB\n"
         "📸 Максимальный размер фото: 10MB"
     )
@@ -454,7 +414,7 @@ async def handle_text(client, message):
                         pass
                 
         elif "instagram.com" in url:
-            # Instagram обработка
+            # Instagram обработка - УПРОЩЕННАЯ
             if not os.path.exists("cookies.txt"):
                 await status.edit_text("❌ Файл cookies.txt не найден.")
                 await asyncio.sleep(5)
@@ -462,52 +422,28 @@ async def handle_text(client, message):
                 return
                 
             tmp_dir = tempfile.mkdtemp()
+            file_path = None
             
             try:
-                await status.edit_text("🔍 Анализирую Instagram контент...")
+                await status.edit_text("📥 Скачиваю Instagram контент...")
                 
-                # Получаем информацию о медиа
-                media_info = await asyncio.to_thread(get_instagram_media_info, url)
+                # Пробуем оба метода
+                try:
+                    file_path, info = await asyncio.to_thread(download_instagram_simple, url, tmp_dir)
+                except Exception as e:
+                    logger.warning(f"Первый метод не сработал: {e}, пробую прямой метод...")
+                    file_path, info = await asyncio.to_thread(download_instagram_direct, url, tmp_dir)
                 
-                if not media_info:
-                    raise Exception("Не удалось получить информацию о контенте")
+                if not file_path:
+                    raise Exception("Не удалось скачать контент")
                 
-                title = media_info.get('title', 'Instagram контент')
+                # Определяем тип медиа
+                media_type = get_instagram_media_type(file_path, info)
+                title = info.get('title', 'Instagram контент') if info else 'Instagram контент'
                 
-                # Определяем тип контента и обрабатываем соответственно
-                if is_instagram_carousel(media_info):
-                    # Карусель с несколькими фото
-                    await status.edit_text(f"🖼️ {title}\n📥 Скачиваю карусель ({len(media_info.get('entries', []))} фото)...")
-                    
-                    downloaded_files, info = await asyncio.to_thread(download_instagram_carousel, url, tmp_dir)
-                    
-                    if not downloaded_files:
-                        raise Exception("Не удалось скачать фото карусели")
-                    
-                    await status.edit_text("📤 Отправляю карусель...")
-                    
-                    # Создаем медиа группу для отправки нескольких фото
-                    media_group = []
-                    for i, file_path in enumerate(downloaded_files):
-                        if i == 0:
-                            # Первое фото с подписью
-                            media_group.append(InputMediaPhoto(
-                                media=file_path,
-                                caption=f"🖼️ {title}\n\nСкачано через @azams_bot"
-                            ))
-                        else:
-                            # Остальные фото без подписи
-                            media_group.append(InputMediaPhoto(media=file_path))
-                    
-                    await safe_send_media_group(client, message.chat.id, media_group)
-                    logger.info(f"✅ Instagram карусель отправлена ({len(downloaded_files)} фото)")
-                    
-                elif is_instagram_video(media_info):
-                    # Видео
-                    await status.edit_text(f"🎬 {title}\n📥 Скачиваю видео...")
-                    file_path, info = await asyncio.to_thread(download_instagram_single_media, url, tmp_dir)
-                    
-                    await status.edit_text("📤 Отправляю видео...")
+                await status.edit_text("📤 Отправляю...")
+                
+                if media_type == "video":
                     await safe_send_video(
                         client,
                         message.chat.id,
@@ -516,12 +452,7 @@ async def handle_text(client, message):
                     )
                     logger.info("✅ Instagram видео отправлено")
                     
-                elif is_instagram_photo(media_info):
-                    # Одиночное фото
-                    await status.edit_text(f"📸 {title}\n📥 Скачиваю фото...")
-                    file_path, info = await asyncio.to_thread(download_instagram_single_media, url, tmp_dir)
-                    
-                    await status.edit_text("📤 Отправляю фото...")
+                elif media_type == "photo":
                     await safe_send_photo(
                         client,
                         message.chat.id,
@@ -531,22 +462,8 @@ async def handle_text(client, message):
                     logger.info("✅ Instagram фото отправлено")
                     
                 else:
-                    # Пробуем скачать как одиночное медиа
-                    await status.edit_text(f"📁 {title}\n📥 Скачиваю контент...")
-                    file_path, info = await asyncio.to_thread(download_instagram_single_media, url, tmp_dir)
-                    
-                    # Определяем тип по расширению
-                    if file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                        await status.edit_text("📤 Отправляю фото...")
-                        await safe_send_photo(
-                            client,
-                            message.chat.id,
-                            file_path,
-                            caption=f"📸 {title}\n\nСкачано через @azams_bot"
-                        )
-                        logger.info("✅ Instagram фото отправлено (автоопределение)")
-                    else:
-                        await status.edit_text("📤 Отправляю видео...")
+                    # Пробуем определить по расширению
+                    if file_path.lower().endswith(('.mp4', '.webm', '.mkv')):
                         await safe_send_video(
                             client,
                             message.chat.id,
@@ -554,13 +471,26 @@ async def handle_text(client, message):
                             caption=f"📥 {title}\n\nСкачано через @azams_bot"
                         )
                         logger.info("✅ Instagram видео отправлено (автоопределение)")
+                    else:
+                        await safe_send_photo(
+                            client,
+                            message.chat.id,
+                            file_path,
+                            caption=f"📸 {title}\n\nСкачано через @azams_bot"
+                        )
+                        logger.info("✅ Instagram фото отправлено (автоопределение)")
 
             except Exception as e:
                 logger.error(f"❌ Instagram ошибка: {e}")
-                raise Exception(f"Не удалось скачать Instagram контент: {str(e)}")
+                raise Exception(f"Не удалось скачать Instagram контент. Убедитесь что:\n• Ссылка правильная\n• Контент доступен\n• Аккаунт не приватный")
                 
             finally:
                 # Очистка для Instagram
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except:
+                        pass
                 if os.path.exists(tmp_dir):
                     try:
                         for file in os.listdir(tmp_dir):
@@ -584,7 +514,7 @@ async def handle_text(client, message):
                     "📥 Попробуйте:\n"
                     "• Другую ссылку\n"
                     "• Проверить доступность контента\n"
-                    "• Более короткое видео"
+                    "• Убедиться что аккаунт не приватный"
                 )
                 await asyncio.sleep(10)
                 await error_msg.delete()
@@ -618,5 +548,5 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
-    logger.info("🚀 Запуск бота с поддержкой Instagram каруселей...")
+    logger.info("🚀 Запуск бота с упрощенной Instagram загрузкой...")
     app.run()
