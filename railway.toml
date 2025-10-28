@@ -1,0 +1,9 @@
+[deploy]
+restartPolicy = "always"
+restartPolicyWindow = "12h"
+
+[build]
+builder = "nixpacks"
+
+[env]
+PYTHON_VERSION = "3.11"
