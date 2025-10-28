@@ -17,6 +17,10 @@ BOT_TOKEN = "6788128988:AAEMmCSafiiEqtS5UWQQxfo--W0On7B6Q08"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -------------------------
+user_processing = {}  # Храним статус обработки для каждого пользователя
+processed_messages = set()  # Отслеживаем обработанные сообщения
+
 # ------------------------- SafeClient для Railway -------------------------
 class SafeClient(Client):
     async def send(self, *args, **kwargs):
@@ -128,10 +132,6 @@ def download_instagram_video(url: str, out_path: str) -> str:
         logger.error(f"Ошибка скачивания Instagram: {e}")
         raise
 
-# ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ОЧИСТКИ -------------------------
-user_processing = {}  # Храним статус обработки для каждого пользователя
-processed_messages = set()  # ИСПРАВЛЕНО: отслеживаем обработанные сообщения
-
 async def cleanup_user_message(message, delay: int = 3):
     """Удаляет сообщение пользователя после задержки"""
     try:
@@ -140,6 +140,14 @@ async def cleanup_user_message(message, delay: int = 3):
         logger.info(f"🗑️ Удалено сообщение пользователя {message.from_user.id}")
     except Exception as e:
         logger.warning(f"Не удалось удалить сообщение: {e}")
+
+def cleanup_old_processed_messages():
+    """Очищает старые записи из processed_messages"""
+    global processed_messages
+    if len(processed_messages) > 1000:
+        # Оставляем только последние 500 записей
+        processed_messages = set(list(processed_messages)[-500:])
+        logger.info("🧹 Очищены старые записи из processed_messages")
 
 # ------------------------- ИСПРАВЛЕННЫЕ ХЭНДЛЕРЫ -------------------------
 
@@ -159,6 +167,9 @@ async def start(_, message):
         "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
         "⚡ Бот автоматически удалит твою ссылку после скачивания!"
     )
+    
+    # Очистка старых записей
+    cleanup_old_processed_messages()
 
 @app.on_message(filters.command(["help", "info"]))
 async def help_command(_, message):
@@ -179,6 +190,9 @@ async def help_command(_, message):
         "⚡ Скачивание работает быстро и бесплатно!"
     )
     await message.reply_text(help_text)
+    
+    # Очистка старых записей
+    cleanup_old_processed_messages()
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(_, message):
@@ -335,10 +349,8 @@ async def handle_text(_, message):
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
             
-        # Очищаем старые записи из processed_messages чтобы не накапливать слишком много
-        if len(processed_messages) > 1000:
-            # Оставляем только последние 500 записей
-            processed_messages = set(list(processed_messages)[-500:])
+        # Очищаем старые записи из processed_messages
+        cleanup_old_processed_messages()
 
 # ------------------------- ЗАПУСК -------------------------
 if __name__ == "__main__":
@@ -361,4 +373,3 @@ if __name__ == "__main__":
     logger.info("🚀 Запуск бота с исправленной логикой...")
     logger.info("📝 Бот будет удалять ТОЛЬКО ссылки после скачивания, остальные сообщения остаются")
     app.run()
-
