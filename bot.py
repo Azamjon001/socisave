@@ -45,22 +45,16 @@ app = SafeClient(
 # ------------------------- ИСПРАВЛЕННЫЕ YOUTUBE ФУНКЦИИ -------------------------
 
 def get_youtube_direct_url(url: str) -> str:
-    """Получаем прямую ссылку на YouTube видео с обходом ограничений"""
+    """Получаем прямую ссылку на YouTube видео"""
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
         "format": "best[height<=480][ext=mp4]/best[height<=720][ext=mp4]/best[ext=mp4]/best",
         "noplaylist": True,
         "ignoreerrors": True,
-        "no_warnings": False,
-        "extract_flat": False,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Cache-Control": "no-cache",
-            "Referer": "https://www.youtube.com/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
     }
     
@@ -71,135 +65,95 @@ def get_youtube_direct_url(url: str) -> str:
             if not info:
                 raise Exception("Не удалось получить информацию о видео")
                 
-            # Пытаемся найти прямую ссылку
             if 'url' in info:
                 return info['url']
             
-            # Ищем в форматах
             elif 'formats' in info:
                 formats = info['formats']
-                
-                # Сортируем форматы по качеству (низкое качество чаще доступно)
                 available_formats = [f for f in formats if f.get('url') and f.get('ext') == 'mp4']
                 if available_formats:
-                    # Предпочитаем более низкое качество для обхода блокировок
                     available_formats.sort(key=lambda x: x.get('height', 0))
                     for fmt in available_formats:
-                        if fmt.get('height', 0) <= 480:  # Начинаем с низкого качества
+                        if fmt.get('height', 0) <= 480:
                             return fmt['url']
-                    # Если нет низкого качества, берем первый доступный
                     return available_formats[0]['url']
             
-            raise Exception("Не удалось получить прямую ссылку на видео")
+            raise Exception("Не удалось получить прямую ссылку")
             
     except Exception as e:
         logger.error(f"Ошибка получения YouTube URL: {e}")
         raise
 
 def download_youtube_video(url: str, out_path: str) -> str:
-    """Скачиваем YouTube видео с улучшенными настройками против блокировок"""
+    """Скачиваем YouTube видео с проверкой файла"""
     ydl_opts = {
-        "outtmpl": os.path.join(out_path, "%(title).50s.%(ext)s"),
-        # Пробуем разные форматы, начиная с низкого качества
-        "format": "best[height<=480][ext=mp4]/worst[height>=240][ext=mp4]/best[ext=mp4]/best",
+        "outtmpl": os.path.join(out_path, "%(title).100s.%(ext)s"),
+        "format": "best[height<=480][ext=mp4]/best[height<=720][ext=mp4]/best[ext=mp4]/best",
         "noplaylist": True,
         "quiet": False,
         "ignoreerrors": True,
-        "retries": 10,
-        "fragment_retries": 10,
+        "retries": 5,
+        "fragment_retries": 5,
         "skip_unavailable_fragments": True,
         "continue_dl": True,
         "no_overwrites": True,
         "merge_output_format": "mp4",
-        "throttled_rate": "100K",
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://www.youtube.com/",
-            "Origin": "https://www.youtube.com",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-site",
-        },
-        # Обходные пути для YouTube
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"], 
-                "player_skip": ["configs", "webpage"],
-                "throttled": ["retry"]
-            }
-        },
-        "postprocessor_args": {
-            "sponsorblock": ["--remove-category", "sponsor"]
         }
     }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Добавляем случайную задержку для обхода rate limiting
-            time.sleep(random.uniform(1, 3))
+            time.sleep(random.uniform(1, 2))
             
             info = ydl.extract_info(url, download=True)
             if not info:
                 raise Exception("Не удалось скачать видео")
                 
             filename = ydl.prepare_filename(info)
-            logger.info(f"✅ YouTube видео скачано: {filename}")
+            
+            # ПРОВЕРЯЕМ ЧТО ФАЙЛ СУЩЕСТВУЕТ И НЕ ПУСТОЙ
+            if not os.path.exists(filename):
+                raise Exception(f"Файл не создан: {filename}")
+                
+            file_size = os.path.getsize(filename)
+            if file_size == 0:
+                os.remove(filename)
+                raise Exception(f"Файл пустой: {filename}")
+                
+            logger.info(f"✅ YouTube видео скачано: {filename} ({file_size} bytes)")
             return filename
             
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания YouTube: {e}")
         raise
 
-def download_youtube_video_fallback(url: str, out_path: str) -> str:
-    """Резервный метод скачивания для сложных случаев"""
-    ydl_opts = {
-        "outtmpl": os.path.join(out_path, "%(title).50s.%(ext)s"),
-        # Пробуем самые простые форматы
-        "format": "worst[ext=mp4]/worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst",
-        "noplaylist": True,
-        "quiet": False,
-        "ignoreerrors": True,
-        "retries": 15,
-        "fragment_retries": 15,
-        "skip_unavailable_fragments": True,
-        "continue_dl": True,
-        "no_overwrites": True,
-        "merge_output_format": "mp4",
-        "throttled_rate": "50K",  # Еще более медленная скорость
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "Referer": "https://m.youtube.com/",
-        },
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios", "web"],
-                "player_skip": ["configs", "webpage", "js"],
-                "throttled": ["retry", "sleep"]
-            }
-        }
-    }
-    
+def safe_send_video(client, chat_id, file_path, caption=""):
+    """Безопасная отправка видео с проверками"""
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Большая задержка для резервного метода
-            time.sleep(random.uniform(2, 5))
+        # Проверяем что файл существует и не пустой
+        if not os.path.exists(file_path):
+            raise Exception(f"Файл не существует: {file_path}")
             
-            info = ydl.extract_info(url, download=True)
-            if not info:
-                raise Exception("Резервный метод также не сработал")
-                
-            filename = ydl.prepare_filename(info)
-            logger.info(f"✅ YouTube видео скачано через резервный метод: {filename}")
-            return filename
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            raise Exception(f"Файл пустой: {file_path}")
             
+        # Проверяем размер файла (Telegram ограничение ~2GB)
+        if file_size > 1900 * 1024 * 1024:  # 1.9GB
+            raise Exception("Файл слишком большой для Telegram")
+            
+        # Отправляем видео
+        return client.send_video(
+            chat_id=chat_id,
+            video=file_path,
+            caption=caption,
+            supports_streaming=True
+        )
+        
     except Exception as e:
-        logger.error(f"❌ Резервный метод также не сработал: {e}")
+        logger.error(f"❌ Ошибка отправки видео: {e}")
         raise
 
 # ------------------------- ОСТАЛЬНЫЕ ФУНКЦИИ -------------------------
@@ -212,7 +166,6 @@ def normalize_url(url: str) -> str:
     if "youtu.be/" in url:
         video_id = url.split("/")[-1].split("?")[0]
         return f"https://www.youtube.com/watch?v={video_id}"
-    # Обработка YouTube Shorts
     if "youtube.com/shorts/" in url:
         video_id = url.split("/shorts/")[-1].split("?")[0]
         return f"https://www.youtube.com/watch?v={video_id}"
@@ -244,14 +197,25 @@ def download_instagram_video(url: str, out_path: str) -> str:
         raise FileNotFoundError("Файл cookies.txt не найден.")
     
     ydl_opts = {
-        "outtmpl": os.path.join(out_path, "%(title).50s.%(ext)s"),
+        "outtmpl": os.path.join(out_path, "%(title).100s.%(ext)s"),
         "format": "best[ext=mp4]/best",
         "cookiefile": "cookies.txt",
         "quiet": True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info)
+        filename = ydl.prepare_filename(info)
+        
+        # Проверяем файл
+        if not os.path.exists(filename):
+            raise Exception(f"Файл Instagram не создан: {filename}")
+            
+        file_size = os.path.getsize(filename)
+        if file_size == 0:
+            os.remove(filename)
+            raise Exception(f"Файл Instagram пустой: {filename}")
+            
+        return filename
 
 # ------------------------- ОБРАБОТЧИКИ -------------------------
 
@@ -267,7 +231,7 @@ async def start(client, message):
     await message.reply_text(
         "Привет! 👋\n\n"
         "📥 Отправь ссылку на Instagram или YouTube — я скачаю видео для тебя.\n\n"
-        "⚡ YouTube Shorts также поддерживаются!\n"
+        "⚡ Поддерживаются YouTube Shorts!\n"
         "🔄 Бот перезапускается каждые 12 часов"
     )
 
@@ -323,105 +287,130 @@ async def handle_text(client, message):
         status = await message.reply_text("⏳ Обработка видео...")
         
         if "youtube" in url or "youtu.be" in url:
+            # YouTube обработка
+            tmp_dir = tempfile.mkdtemp()
+            file_path = None
+            
             try:
+                # Пробуем прямую ссылку
                 await status.edit_text("🔗 Получаю прямую ссылку YouTube...")
-                direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
-                
-                await status.edit_text("📤 Отправляю видео...")
-                await message.reply_video(
-                    direct_url, 
-                    caption="📥 YouTube видео скачано через @azams_bot"
-                )
-                logger.info("✅ YouTube видео отправлено через прямую ссылку")
-                
-            except Exception as e:
-                logger.warning(f"❌ Прямая ссылка YouTube не сработала: {e}, скачиваю файл...")
-                await status.edit_text("📥 Скачиваю YouTube видео (основной метод)...")
-                tmp_dir = tempfile.mkdtemp()
-                
                 try:
-                    file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
+                    direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
                     await status.edit_text("📤 Отправляю видео...")
                     await message.reply_video(
-                        file_path, 
+                        direct_url, 
+                        caption="📥 YouTube видео скачано через @azams_bot"
+                    )
+                    logger.info("✅ YouTube видео отправлено через прямую ссылку")
+                    
+                except Exception as e:
+                    logger.warning(f"❌ Прямая ссылка не сработала: {e}, скачиваю файл...")
+                    await status.edit_text("📥 Скачиваю YouTube видео...")
+                    
+                    # Скачиваем файл
+                    file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
+                    
+                    # Проверяем файл перед отправкой
+                    if not os.path.exists(file_path):
+                        raise Exception("Файл не был создан после скачивания")
+                        
+                    file_size = os.path.getsize(file_path)
+                    logger.info(f"📊 Размер файла: {file_size} bytes")
+                    
+                    await status.edit_text("📤 Отправляю видео...")
+                    
+                    # Используем безопасную отправку
+                    await safe_send_video(
+                        client,
+                        message.chat.id,
+                        file_path,
                         caption="📥 YouTube видео скачано через @azams_bot"
                     )
                     logger.info("✅ YouTube видео отправлено как файл")
-                    
-                    # Очистка временных файлов
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                    os.rmdir(tmp_dir)
-                    
-                except Exception as download_error:
-                    logger.warning(f"❌ Основной метод не сработал: {download_error}, пробую резервный...")
-                    await status.edit_text("🔄 Пробую резервный метод...")
-                    
+
+            finally:
+                # ОЧИСТКА В ЛЮБОМ СЛУЧАЕ
+                if file_path and os.path.exists(file_path):
                     try:
-                        file_path = await asyncio.to_thread(download_youtube_video_fallback, url, tmp_dir)
-                        await status.edit_text("📤 Отправляю видео...")
-                        await message.reply_video(
-                            file_path, 
-                            caption="📥 YouTube видео скачано через @azams_bot"
-                        )
-                        logger.info("✅ YouTube видео отправлено через резервный метод")
-                        
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
+                        os.remove(file_path)
+                        logger.info(f"🗑️ Удален временный файл: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить файл {file_path}: {e}")
+                
+                if os.path.exists(tmp_dir):
+                    try:
+                        # Удаляем оставшиеся файлы в папке
+                        for file in os.listdir(tmp_dir):
+                            file_to_remove = os.path.join(tmp_dir, file)
+                            if os.path.exists(file_to_remove):
+                                os.remove(file_to_remove)
                         os.rmdir(tmp_dir)
-                        
-                    except Exception as fallback_error:
-                        # Очистка при ошибке
-                        if os.path.exists(tmp_dir):
-                            for file in os.listdir(tmp_dir):
-                                os.remove(os.path.join(tmp_dir, file))
-                            os.rmdir(tmp_dir)
-                        raise fallback_error
+                        logger.info(f"🗑️ Удалена временная папка: {tmp_dir}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить папку {tmp_dir}: {e}")
                 
         elif "instagram.com" in url:
+            # Instagram обработка
             if not os.path.exists("cookies.txt"):
                 await status.edit_text("❌ Файл cookies.txt не найден.")
                 await asyncio.sleep(5)
                 await status.delete()
                 return
                 
+            tmp_dir = tempfile.mkdtemp()
+            file_path = None
+            
             try:
                 await status.edit_text("🔗 Получаю прямую ссылку Instagram...")
-                direct_url = await asyncio.to_thread(get_instagram_url, url)
-                if direct_url:
-                    await status.edit_text("📤 Отправляю видео...")
-                    await message.reply_video(
-                        direct_url, 
-                        caption="📥 Instagram видео скачано через @azams_bot"
-                    )
-                    logger.info("✅ Instagram видео отправлено через прямую ссылку")
-                else:
-                    raise Exception("Не удалось получить прямую ссылку")
-                
-            except Exception as e:
-                logger.warning(f"❌ Прямая ссылка Instagram не сработала: {e}, скачиваю файл...")
-                await status.edit_text("📥 Скачиваю Instagram видео...")
-                tmp_dir = tempfile.mkdtemp()
-                
                 try:
+                    direct_url = await asyncio.to_thread(get_instagram_url, url)
+                    if direct_url:
+                        await status.edit_text("📤 Отправляю видео...")
+                        await message.reply_video(
+                            direct_url, 
+                            caption="📥 Instagram видео скачано через @azams_bot"
+                        )
+                        logger.info("✅ Instagram видео отправлено через прямую ссылку")
+                    else:
+                        raise Exception("Не удалось получить прямую ссылку")
+                    
+                except Exception as e:
+                    logger.warning(f"❌ Прямая ссылка Instagram не сработала: {e}, скачиваю файл...")
+                    await status.edit_text("📥 Скачиваю Instagram видео...")
+                    
                     file_path = await asyncio.to_thread(download_instagram_video, url, tmp_dir)
+                    
+                    # Проверяем файл
+                    if not os.path.exists(file_path):
+                        raise Exception("Файл Instagram не создан")
+                        
                     await status.edit_text("📤 Отправляю видео...")
-                    await message.reply_video(
+                    
+                    await safe_send_video(
+                        client,
+                        message.chat.id,
                         file_path,
                         caption="📥 Instagram видео скачано через @azams_bot"
                     )
                     logger.info("✅ Instagram видео отправлено как файл")
-                    
-                    if os.path.exists(file_path):
+
+            finally:
+                # Очистка для Instagram
+                if file_path and os.path.exists(file_path):
+                    try:
                         os.remove(file_path)
-                    os.rmdir(tmp_dir)
-                    
-                except Exception as download_error:
-                    if os.path.exists(tmp_dir):
+                    except:
+                        pass
+                
+                if os.path.exists(tmp_dir):
+                    try:
                         for file in os.listdir(tmp_dir):
-                            os.remove(os.path.join(tmp_dir, file))
+                            file_to_remove = os.path.join(tmp_dir, file)
+                            if os.path.exists(file_to_remove):
+                                os.remove(file_to_remove)
                         os.rmdir(tmp_dir)
-                    raise download_error
+                    except:
+                        pass
 
         # Успешное завершение
         await message.delete()
@@ -432,11 +421,8 @@ async def handle_text(client, message):
         if status:
             try:
                 error_msg = await message.reply_text(
-                    "❌ Не удалось скачать видео. Возможно:\n"
-                    "• Видео недоступно в вашем регионе\n"
-                    "• Слишком длинное видео\n"
-                    "• Ограничения платформы\n\n"
-                    "📥 Попробуйте другую ссылку!"
+                    f"❌ Ошибка: {str(e)[:100]}...\n\n"
+                    "📥 Попробуйте другую ссылку или обратитесь к администратору."
                 )
                 await asyncio.sleep(8)
                 await error_msg.delete()
@@ -470,6 +456,5 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ Файл cookies.txt не найден")
     
-    logger.info("🚀 Запуск бота с улучшенной поддержкой YouTube...")
+    logger.info("🚀 Запуск бота с исправленной обработкой файлов...")
     app.run()
-
