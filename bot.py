@@ -7,6 +7,7 @@ import re
 import time
 import random
 import requests
+import json
 from pyrogram import Client, filters
 from pyrogram.errors import BadRequest, BadMsgNotification
 
@@ -76,130 +77,131 @@ def download_youtube_video(url: str, out_path: str) -> str:
         logger.error(f"❌ Ошибка YouTube: {e}")
         raise
 
-# ------------------------- INSTAGRAM АЛЬТЕРНАТИВНЫЕ МЕТОДЫ -------------------------
+# ------------------------- INSTAGRAM ФУНКЦИИ (ОБНОВЛЕННЫЕ) -------------------------
 
 def check_cookies_file():
     """Проверяем cookies файл"""
     if not os.path.exists("cookies.txt"):
+        logger.error("❌ Файл cookies.txt не найден!")
         return False
     
+    # Проверяем что файл не пустой
     file_size = os.path.getsize("cookies.txt")
     if file_size == 0:
+        logger.error("❌ Файл cookies.txt пустой!")
         return False
         
+    logger.info("✅ Файл cookies.txt найден")
     return True
 
-def try_instagram_public(url: str, out_path: str):
-    """Пробуем скачать через публичные методы (без cookies)"""
-    try:
-        ydl_opts = {
-            "outtmpl": os.path.join(out_path, "instagram_%(title)s.%(ext)s"),
-            "quiet": False,
-            "ignoreerrors": True,
-            "retries": 2,
-            "extract_flat": False,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            
-            # Ищем любой скачанный файл
-            for file in os.listdir(out_path):
-                file_path = os.path.join(out_path, file)
-                if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
-                    return file_path, info
-            
-            raise Exception("Не удалось скачать через публичный метод")
-            
-    except Exception as e:
-        raise Exception(f"Публичный метод не сработал: {e}")
-
-def try_instagram_with_cookies(url: str, out_path: str):
-    """Пробуем скачать с cookies"""
+def download_instagram_with_retry(url: str, out_path: str):
+    """Скачивание Instagram с несколькими попытками и разными методами"""
     if not check_cookies_file():
-        raise Exception("Cookies файл не найден")
+        raise FileNotFoundError("Файл cookies.txt не найден или пустой")
     
-    try:
-        ydl_opts = {
-            "outtmpl": os.path.join(out_path, "instagram_%(title)s.%(ext)s"),
-            "cookiefile": "cookies.txt",
-            "quiet": False,
-            "ignoreerrors": True,
-            "retries": 3,
-            "extract_flat": False,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            
-            # Ищем любой скачанный файл
-            for file in os.listdir(out_path):
-                file_path = os.path.join(out_path, file)
-                if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
-                    return file_path, info
-            
-            raise Exception("Не удалось скачать даже с cookies")
-            
-    except Exception as e:
-        raise Exception(f"Метод с cookies не сработал: {e}")
-
-def download_instagram_all_methods(url: str, out_path: str):
-    """Пробуем все методы скачивания Instagram"""
     methods = [
-        ("Публичный метод", try_instagram_public),
-        ("Метод с cookies", try_instagram_with_cookies),
+        {
+            "name": "Простой метод",
+            "opts": {
+                "outtmpl": os.path.join(out_path, "ig_%(title)s.%(ext)s"),
+                "cookiefile": "cookies.txt",
+                "quiet": False,
+                "ignoreerrors": True,
+                "retries": 2,
+            }
+        },
+        {
+            "name": "Метод с форматом", 
+            "opts": {
+                "outtmpl": os.path.join(out_path, "ig_media.%(ext)s"),
+                "cookiefile": "cookies.txt",
+                "quiet": False,
+                "ignoreerrors": True,
+                "retries": 3,
+                "format": "best"
+            }
+        },
+        {
+            "name": "Агрессивный метод",
+            "opts": {
+                "outtmpl": os.path.join(out_path, "instagram.%(ext)s"),
+                "cookiefile": "cookies.txt", 
+                "quiet": False,
+                "ignoreerrors": True,
+                "retries": 5,
+                "fragment_retries": 5,
+                "skip_unavailable_fragments": True,
+                "extract_flat": False,
+            }
+        }
     ]
     
     last_error = None
     
-    for method_name, method_func in methods:
+    for method in methods:
         try:
-            logger.info(f"🔄 Пробую {method_name}...")
-            return method_func(url, out_path)
+            logger.info(f"🔄 Пробую {method['name']}...")
+            
+            with yt_dlp.YoutubeDL(method['opts']) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                # Ищем скачанный файл
+                for file in os.listdir(out_path):
+                    file_path = os.path.join(out_path, file)
+                    if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                        logger.info(f"✅ Найден файл: {file_path}")
+                        return file_path, info
+                
+                raise Exception("Файл не найден после скачивания")
+                
         except Exception as e:
             last_error = e
-            logger.warning(f"❌ {method_name} не сработал: {e}")
-            time.sleep(2)
+            logger.warning(f"❌ {method['name']} не сработал: {e}")
+            time.sleep(2)  # Задержка между попытками
             continue
     
-    raise Exception(f"Все методы Instagram не сработали. Instagram временно недоступен.")
+    raise Exception(f"Все методы не сработали. Последняя ошибка: {last_error}")
 
-# ------------------------- INSTAGRAM WEB API ALTERNATIVE -------------------------
+def get_media_type(file_path: str) -> str:
+    """Определяем тип медиа по расширению файла"""
+    if not file_path:
+        return "unknown"
+    
+    ext = file_path.lower().split('.')[-1]
+    
+    if ext in ['mp4', 'webm', 'mkv', 'mov', 'avi']:
+        return "video"
+    elif ext in ['jpg', 'jpeg', 'png', 'webp', 'gif']:
+        return "photo"
+    else:
+        return "unknown"
 
-def download_instagram_fallback(url: str) -> str:
-    """Альтернативный метод через веб-запросы (для публичных постов)"""
+# ------------------------- INSTAGRAM ALTERNATIVE METHODS -------------------------
+
+def test_instagram_access():
+    """Тестируем доступ к Instagram"""
+    if not check_cookies_file():
+        return False, "Cookies файл не найден"
+    
+    test_url = "https://www.instagram.com/p/CuZkKzOsErk/"  # Публичный пост для теста
+    
     try:
-        # Используем сторонний сервис как запасной вариант
-        # Это пример - можно добавить реальный API
-        service_url = f"https://instasupersave.com/api/ig"
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "cookiefile": "cookies.txt",
+            "ignoreerrors": True,
+        }
         
-        response = requests.post(service_url, json={"url": url}, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('success') and data.get('url'):
-                # Скачиваем медиа по полученной ссылке
-                media_url = data['url']
-                response = requests.get(media_url, stream=True, timeout=30)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(test_url, download=False)
+            if info:
+                return True, "Instagram доступен"
+            else:
+                return False, "Не удалось получить информацию о тестовом посте"
                 
-                if response.status_code == 200:
-                    # Сохраняем временный файл
-                    ext = 'mp4' if 'video' in response.headers.get('content-type', '') else 'jpg'
-                    file_path = os.path.join(tempfile.gettempdir(), f"instagram_{int(time.time())}.{ext}")
-                    
-                    with open(file_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    
-                    if os.path.getsize(file_path) > 0:
-                        return file_path
-                    
-                    os.remove(file_path)
-                
-        raise Exception("Альтернативный метод не сработал")
-        
     except Exception as e:
-        raise Exception(f"Альтернативный метод ошибка: {e}")
+        return False, f"Ошибка доступа к Instagram: {e}"
 
 # ------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------
 
@@ -215,20 +217,6 @@ def normalize_url(url: str) -> str:
         video_id = url.split("/shorts/")[-1].split("?")[0]
         return f"https://www.youtube.com/watch?v={video_id}"
     return url
-
-def get_media_type(file_path: str) -> str:
-    """Определяем тип медиа по расширению файла"""
-    if not file_path:
-        return "unknown"
-    
-    ext = file_path.lower().split('.')[-1]
-    
-    if ext in ['mp4', 'webm', 'mkv', 'mov', 'avi']:
-        return "video"
-    elif ext in ['jpg', 'jpeg', 'png', 'webp', 'gif']:
-        return "photo"
-    else:
-        return "unknown"
 
 async def safe_send_video(client, chat_id, file_path, caption=""):
     """Безопасная отправка видео"""
@@ -282,36 +270,18 @@ async def start(client, message):
         
     processed_messages.add(message_id)
     
-    has_cookies = check_cookies_file()
+    # Тестируем Instagram доступ
+    ig_status, ig_message = test_instagram_access()
+    ig_status_text = "✅ Instagram доступен" if ig_status else f"❌ {ig_message}"
     
-    welcome_text = (
-        "Привет! 👋\n\n"
-        "📥 **YouTube:** ✅ Всегда работает!\n"
-        "• Видео, Shorts, музыка\n"
-        "• Быстрое скачивание\n\n"
+    await message.reply_text(
+        f"Привет! 👋\n\n"
+        f"📥 Отправь ссылку на:\n"
+        f"• YouTube (видео, Shorts) - ✅ Работает\n"
+        f"• Instagram - {ig_status_text}\n\n"
+        f"⚡ Быстрое скачивание!\n"
+        f"🔄 Бот перезапускается каждые 12 часов"
     )
-    
-    if has_cookies:
-        welcome_text += (
-            "📸 **Instagram:** ⚠️ Ограниченно\n"
-            "• Публичные посты (иногда)\n"
-            "• Требуются актуальные cookies\n"
-            "• Может не работать из-за ограничений Instagram\n\n"
-        )
-    else:
-        welcome_text += (
-            "📸 **Instagram:** ❌ Требует настройки\n"
-            "• Нужен файл cookies.txt\n"
-            "• Только публичные посты\n"
-            "• Часто бывают ограничения\n\n"
-        )
-    
-    welcome_text += (
-        "⚡ Просто отправь ссылку!\n"
-        "🔄 Бот перезапускается каждые 12 часов"
-    )
-    
-    await message.reply_text(welcome_text)
 
 @app.on_message(filters.command(["help", "info"]))
 async def help_command(client, message):
@@ -322,65 +292,52 @@ async def help_command(client, message):
         
     processed_messages.add(message_id)
     
-    has_cookies = check_cookies_file()
+    # Тестируем Instagram доступ
+    ig_status, ig_message = test_instagram_access()
     
     help_text = (
         "🤖 **Помощь по боту**\n\n"
-        "🎥 **YouTube (рекомендуется):**\n"
-        "• ✅ Видео любой длительности\n"
-        "• ✅ YouTube Shorts\n"
-        "• ✅ Музыкальные клипы\n"
-        "• ✅ Стабильная работа\n\n"
+        "📥 **YouTube:**\n"
+        "• Видео любой длительности\n"
+        "• YouTube Shorts\n"
+        "• Быстрое скачивание ✅\n\n"
     )
     
-    if has_cookies:
+    if ig_status:
         help_text += (
-            "📸 **Instagram (ограниченно):**\n"
-            "• ⚠️ Только публичные посты\n"
-            "• ⚠️ Может не работать\n"
-            "• ⚠️ Требует актуальные cookies\n"
-            "• ❌ Приватные аккаунты\n"
-            "• ❌ Частые ограничения\n\n"
+            "📸 **Instagram:**\n"
+            "• Видео и рилсы\n" 
+            "• Фото и посты\n"
+            "• Требуется cookies.txt ✅\n\n"
         )
     else:
         help_text += (
             "📸 **Instagram:**\n"
-            "• ❌ Требует файл cookies.txt\n"
-            "• ❌ Сложная настройка\n"
-            "• ❌ Частые ошибки\n\n"
+            f"• Временно недоступен ❌\n"
+            f"• Причина: {ig_message}\n\n"
         )
     
-    help_text += (
-        "💡 **Совет:** Используйте YouTube для надежного скачивания!\n"
-        "📝 Просто отправьте ссылку на YouTube видео."
-    )
+    help_text += "⚡ Просто отправь ссылку!"
     
     await message.reply_text(help_text)
 
-@app.on_message(filters.command("test"))
-async def test_command(client, message):
-    """Тестовая команда для проверки ссылок"""
-    try:
-        text = message.text.split(' ', 1)
-        if len(text) < 2:
-            await message.reply_text("📝 Использование: /test <ссылка>")
-            return
-        
-        url = text[1].strip()
-        
-        if "youtube.com" in url or "youtu.be" in url:
-            await message.reply_text("✅ YouTube ссылка - должна работать!")
-        elif "instagram.com" in url:
-            has_cookies = check_cookies_file()
-            if has_cookies:
-                await message.reply_text("⚠️ Instagram ссылка - может не работать из-за ограничений платформы")
-            else:
-                await message.reply_text("❌ Instagram ссылка - требуется cookies.txt файл")
-        else:
-            await message.reply_text("❌ Неподдерживаемая ссылка")
-            
-    except Exception as e:
-        await message.reply_text(f"❌ Ошибка: {e}")
+@app.on_message(filters.command("status"))
+async def status_command(client, message):
+    """Проверка статуса бота"""
+    ig_status, ig_message = test_instagram_access()
+    
+    status_text = (
+        "🤖 **Статус бота**\n\n"
+        f"📊 Обработано сообщений: {len(processed_messages)}\n"
+        f"👤 Активных пользователей: {len(user_processing)}\n\n"
+        f"🎥 **YouTube:** ✅ Работает\n"
+        f"📸 **Instagram:** {'✅ Работает' if ig_status else '❌ Недоступен'}\n"
+    )
+    
+    if not ig_status:
+        status_text += f"\n🔧 Проблема Instagram: {ig_message}"
+    
+    await message.reply_text(status_text)
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(client, message):
@@ -404,10 +361,10 @@ async def handle_text(client, message):
     if not any(domain in url for domain in supported_domains):
         await message.reply_text(
             "❌ Неподдерживаемая ссылка\n\n"
-            "🎥 **Поддерживается:**\n"
-            "• YouTube (youtube.com, youtu.be) - ✅ Рекомендуется\n"
-            "• Instagram (instagram.com) - ⚠️ Ограниченно\n\n"
-            "💡 Для надежной работы используйте YouTube ссылки"
+            "📥 Поддерживаются только:\n"
+            "• YouTube (youtube.com, youtu.be)\n"
+            "• Instagram (instagram.com)\n\n"
+            "⚡ Отправьте правильную ссылку"
         )
         return
 
@@ -428,7 +385,7 @@ async def handle_text(client, message):
         status = await message.reply_text("⏳ Обработка ссылки...")
         
         if "youtube" in url or "youtu.be" in url:
-            # YouTube обработка - ОСНОВНОЙ РАБОЧИЙ МЕТОД
+            # YouTube обработка
             tmp_dir = tempfile.mkdtemp()
             file_path = None
             
@@ -465,20 +422,25 @@ async def handle_text(client, message):
                         pass
                 
         elif "instagram.com" in url:
-            # Instagram обработка - ЗАПАСНОЙ МЕТОД
+            # Instagram обработка
             tmp_dir = tempfile.mkdtemp()
             file_path = None
             
             try:
-                await status.edit_text("⚠️ Пробую скачать Instagram...")
+                # Сначала проверяем доступ
+                ig_status, ig_message = test_instagram_access()
+                if not ig_status:
+                    raise Exception(f"Instagram недоступен: {ig_message}")
                 
-                # Пробуем все методы
-                file_path, info = await asyncio.to_thread(download_instagram_all_methods, url, tmp_dir)
+                await status.edit_text("📥 Скачиваю Instagram контент...")
+                
+                # Пробуем скачать с повторными попытками
+                file_path, info = await asyncio.to_thread(download_instagram_with_retry, url, tmp_dir)
                 
                 if not file_path:
-                    raise Exception("Все методы не сработали")
+                    raise Exception("Не удалось скачать контент")
                 
-                # Определяем тип медиа и отправляем
+                # Определяем тип медиа
                 media_type = get_media_type(file_path)
                 await status.edit_text("📤 Отправляю...")
                 
@@ -489,30 +451,52 @@ async def handle_text(client, message):
                         file_path,
                         caption="📥 Instagram видео скачано через @azams_bot"
                     )
-                else:
+                    logger.info("✅ Instagram видео отправлено")
+                    
+                elif media_type == "photo":
                     await safe_send_photo(
                         client,
                         message.chat.id,
                         file_path,
                         caption="📸 Instagram фото скачано через @azams_bot"
                     )
+                    logger.info("✅ Instagram фото отправлено")
+                    
+                else:
+                    # Пробуем отправить как видео
+                    try:
+                        await safe_send_video(
+                            client,
+                            message.chat.id,
+                            file_path,
+                            caption="📥 Instagram контент скачан через @azams_bot"
+                        )
+                    except:
+                        # Если не видео, пробуем как фото
+                        await safe_send_photo(
+                            client,
+                            message.chat.id,
+                            file_path,
+                            caption="📸 Instagram контент скачан через @azams_bot"
+                        )
 
             except Exception as e:
                 logger.error(f"❌ Instagram ошибка: {e}")
                 
-                # Предлагаем использовать YouTube вместо Instagram
-                raise Exception(
-                    "❌ Instagram временно недоступен\n\n"
-                    "📸 **Проблемы с Instagram:**\n"
-                    "• Instagram блокирует скачивание\n"
-                    "• Требует постоянное обновление cookies\n"
-                    "• Частые ограничения доступа\n\n"
-                    "🎥 **Рекомендуем:**\n"
-                    "• Использовать YouTube ссылки\n"
-                    "• YouTube работает стабильно и быстро\n"
-                    "• Поддерживает видео любого качества\n\n"
-                    "💡 Отправьте ссылку на YouTube видео!"
-                )
+                # Более понятное сообщение об ошибке
+                error_msg = str(e)
+                if "cookies" in error_msg.lower():
+                    user_msg = "❌ Проблема с cookies файлом\n\nУбедитесь что:\n• Файл cookies.txt существует\n• Он не пустой\n• Cookies актуальные"
+                elif "login" in error_msg.lower() or "auth" in error_msg.lower():
+                    user_msg = "❌ Требуется авторизация\n\nInstagram требует вход в аккаунт. Проверьте cookies файл."
+                elif "private" in error_msg.lower():
+                    user_msg = "❌ Приватный аккаунт\n\nЭтот Instagram аккаунт приватный. Нужно быть подписчиком."
+                elif "unavailable" in error_msg.lower():
+                    user_msg = "❌ Контент недоступен\n\nЭтот пост может быть удален или скрыт."
+                else:
+                    user_msg = f"❌ Не удалось скачать Instagram контент\n\nПопробуйте:\n• Другую ссылку\n• Проверить доступность поста\n• Обновить cookies файл"
+                
+                raise Exception(user_msg)
                 
             finally:
                 # Очистка
@@ -538,7 +522,7 @@ async def handle_text(client, message):
         if status:
             try:
                 error_msg = await message.reply_text(str(e))
-                await asyncio.sleep(15)  # Дольше показываем сообщение об ошибке
+                await asyncio.sleep(10)
                 await error_msg.delete()
             except:
                 pass
@@ -564,13 +548,12 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.warning(f"Не удалось удалить {session_file}: {e}")
     
-    # Проверка cookies
-    has_cookies = check_cookies_file()
-    if has_cookies:
-        logger.info("✅ Файл cookies.txt найден")
+    # Проверка cookies и тест Instagram
+    ig_status, ig_message = test_instagram_access()
+    if ig_status:
+        logger.info("✅ Instagram доступен")
     else:
-        logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
+        logger.warning(f"⚠️ Instagram недоступен: {ig_message}")
     
-    logger.info("🚀 Запуск бота с акцентом на YouTube...")
-    logger.info("💡 Instagram работает ограниченно из-за блокировок платформы")
+    logger.info("🚀 Запуск бота с улучшенной обработкой ошибок...")
     app.run()
