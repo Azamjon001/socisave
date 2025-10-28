@@ -199,25 +199,16 @@ def download_instagram_photos(url: str, out_path: str) -> list:
 # ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ОЧИСТКИ -------------------------
 user_processing = {}  # Храним статус обработки для каждого пользователя
 
-async def cleanup_user_message(message, delay: int = 3):
-    """Удаляет сообщение пользователя после задержки"""
-    try:
-        await asyncio.sleep(delay)
-        await message.delete()
-        logger.info(f"🗑️ Удалено сообщение пользователя {message.from_user.id}")
-    except Exception as e:
-        logger.warning(f"Не удалось удалить сообщение: {e}")
-
 # ------------------------- ИСПРАВЛЕННЫЕ ХЭНДЛЕРЫ -------------------------
 
 @app.on_message(filters.command("start"))
 async def start(_, message):
     """Обработчик команды /start"""
-    welcome_msg = await message.reply_text(
+    await message.reply_text(
         "Привет! 👋\n\n"
         "📥 Отправь ссылку на Instagram — я скачаю видео или фото для тебя.\n"
         "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
-        "⚡ Бот автоматически удалит твою ссылку после скачивания!"
+        "⚡ Просто отправь ссылку и получи контент!"
     )
 
 @app.on_message(filters.command(["help", "info"]))
@@ -228,7 +219,6 @@ async def help_command(_, message):
         "📥 Просто отправь ссылку на:\n"
         "• Instagram видео/реельс/фото\n" 
         "• YouTube видео\n\n"
-        "📌 Бот автоматически удалит твою ссылку после скачивания\n"
         "⚡ Скачивание работает быстро и бесплатно!\n"
         "🔄 Бот автоматически перезагружается каждые 12 часов"
     )
@@ -236,7 +226,7 @@ async def help_command(_, message):
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(_, message):
-    """Обработчик текстовых сообщений от пользователей - ТОЛЬКО ДЛЯ ССЫЛОК"""
+    """Обработчик текстовых сообщений от пользователей"""
     
     # Пропускаем команды (они обрабатываются отдельно)
     if message.text and message.text.startswith('/'):
@@ -248,20 +238,15 @@ async def handle_text(_, message):
     # Извлекаем URL
     url = extract_first_url(text)
     if not url or not any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
-        # НЕ удаляем обычные текстовые сообщения, только ссылки
         return
 
     # Проверяем, не обрабатывается ли уже запрос от этого пользователя
     if user_id in user_processing and user_processing[user_id].get('processing'):
-        temp_msg = await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
-        await asyncio.sleep(3)
-        await temp_msg.delete()
+        await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
         return
 
     # Помечаем как обрабатываемое
     user_processing[user_id] = {'processing': True}
-    
-    status = None
     
     try:
         url = normalize_url(url)
@@ -276,7 +261,7 @@ async def handle_text(_, message):
                     direct_url, 
                     caption="📥 YouTube видео скачано через @azams_bot"
                 )
-                logger.info("✅ YouTube видео отправлено через прямую ссылку")
+                await status.edit_text("✅ YouTube видео отправлено!")
                 
             except Exception as e:
                 # Если прямая ссылка не работает, скачиваем файл
@@ -289,7 +274,7 @@ async def handle_text(_, message):
                         file_path, 
                         caption="📥 YouTube видео скачано через @azams_bot"
                     )
-                    logger.info("✅ YouTube видео отправлено как файл")
+                    await status.edit_text("✅ YouTube видео отправлено!")
                     
                     # Очистка временных файлов
                     if os.path.exists(file_path):
@@ -297,19 +282,12 @@ async def handle_text(_, message):
                     os.rmdir(tmp_dir)
                     
                 except Exception as download_error:
-                    # Очистка при ошибке
-                    if os.path.exists(tmp_dir):
-                        for file in os.listdir(tmp_dir):
-                            os.remove(os.path.join(tmp_dir, file))
-                        os.rmdir(tmp_dir)
-                    raise download_error
+                    await status.edit_text(f"❌ Ошибка при скачивании YouTube: {download_error}")
                 
         elif "instagram.com" in url:
             # Instagram обработка - ОПРЕДЕЛЯЕМ ТИП КОНТЕНТА
             if not os.path.exists("cookies.txt"):
                 await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
-                await asyncio.sleep(5)
-                await status.delete()
                 return
                 
             try:
@@ -327,12 +305,11 @@ async def handle_text(_, message):
                                 media_info['url'], 
                                 caption="📥 Instagram видео скачано через @azams_bot"
                             )
-                            logger.info("✅ Instagram видео отправлено через прямую ссылку")
+                            await status.edit_text("✅ Instagram видео отправлено!")
                         else:
                             raise Exception("Не удалось получить прямую ссылку")
                         
                     except Exception as e:
-                        logger.warning(f"Прямая ссылка не сработала: {e}, скачиваю файл...")
                         await status.edit_text("📥 Скачиваю видео...")
                         tmp_dir = tempfile.mkdtemp()
                         
@@ -342,7 +319,7 @@ async def handle_text(_, message):
                                 file_path,
                                 caption="📥 Instagram видео скачано через @azams_bot"
                             )
-                            logger.info("✅ Instagram видео отправлено как файл")
+                            await status.edit_text("✅ Instagram видео отправлено!")
                             
                             # Очистка временных файлов
                             if os.path.exists(file_path):
@@ -350,12 +327,7 @@ async def handle_text(_, message):
                             os.rmdir(tmp_dir)
                             
                         except Exception as download_error:
-                            # Очистка при ошибке
-                            if os.path.exists(tmp_dir):
-                                for file in os.listdir(tmp_dir):
-                                    os.remove(os.path.join(tmp_dir, file))
-                                os.rmdir(tmp_dir)
-                            raise download_error
+                            await status.edit_text(f"❌ Ошибка при скачивании Instagram видео: {download_error}")
                 
                 elif media_info['type'] == 'photo':
                     # ОБРАБОТКА ФОТО
@@ -372,7 +344,7 @@ async def handle_text(_, message):
                                 photo_paths[0],
                                 caption="📸 Instagram фото скачано через @azams_bot"
                             )
-                            logger.info("✅ Instagram фото отправлено")
+                            await status.edit_text("✅ Instagram фото отправлено!")
                         else:
                             # Несколько фото (альбом)
                             media_group = []
@@ -386,7 +358,7 @@ async def handle_text(_, message):
                                     media_group.append(InputMediaPhoto(photo_path))
                             
                             await message.reply_media_group(media_group)
-                            logger.info(f"✅ Instagram альбом отправлен ({len(photo_paths)} фото)")
+                            await status.edit_text(f"✅ Instagram альбом отправлен ({len(photo_paths)} фото)")
                         
                         # Очистка временных файлов
                         for photo_path in photo_paths:
@@ -395,36 +367,12 @@ async def handle_text(_, message):
                         os.rmdir(tmp_dir)
                         
                     except Exception as download_error:
-                        # Очистка при ошибке
-                        if os.path.exists(tmp_dir):
-                            for file in os.listdir(tmp_dir):
-                                os.remove(os.path.join(tmp_dir, file))
-                            os.rmdir(tmp_dir)
-                        raise download_error
-
-        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем только сообщение пользователя со ссылкой
-    await message.delete()
-    logger.info(f"✅ Обработка завершена для пользователя {user_id}")
+                        await status.edit_text(f"❌ Ошибка при скачивании Instagram фото: {download_error}")
 
     except Exception as e:
-        logger.error(f"❌ Ошибка обработки для пользователя {user_id}: {e}")
+        await message.reply_text(f"❌ Произошла ошибка: {str(e)}")
         
-        if status:
-            try:
-                error_msg = await message.reply_text(f"❌ Ошибка: {str(e)}")
-                await asyncio.sleep(5)
-                await error_msg.delete()
-            except Exception as delete_error:
-                logger.warning(f"Не удалось удалить сообщение об ошибке: {delete_error}")
-                
     finally:
-        # Удаляем статус сообщение
-        if status:
-            try:
-                await status.delete()
-            except Exception as delete_error:
-                logger.warning(f"Не удалось удалить статус сообщение: {delete_error}")
-                
         # Снимаем блокировку обработки
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
@@ -450,8 +398,7 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
-    logger.info("🚀 Запуск бота с исправленной логикой...")
-    logger.info("📝 Бот будет удалять ТОЛЬКО ссылки после скачивания, остальные сообщения остаются")
+    logger.info("🚀 Запуск бота...")
     logger.info("🔄 Автоматическая перезагрузка каждые 12 часов активирована")
     app.run()
-
+    
