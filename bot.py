@@ -7,8 +7,9 @@ import re
 import random
 import time
 import requests
-import schedule
-import threading
+import signal
+import sys
+from datetime import datetime, timedelta
 from pyrogram import Client, filters
 from pyrogram.errors import BadRequest, BadMsgNotification
 
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 # ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -------------------------
 user_processing = {}  # Храним статус обработки для каждого пользователя
 processed_messages = set()  # Отслеживаем обработанные сообщения
+start_time = time.time()  # Время запуска бота
 
 # ------------------------- SafeClient для Railway -------------------------
 class SafeClient(Client):
@@ -50,6 +52,30 @@ app = SafeClient(
     sleep_threshold=15
 )
 
+# ------------------------- ФУНКЦИЯ АВТОПЕРЕЗАПУСКА -------------------------
+async def auto_restart():
+    """Автоматический перезапуск бота каждые 12 часов"""
+    RESTART_INTERVAL = 12 * 60 * 60  # 12 часов в секундах
+    
+    while True:
+        await asyncio.sleep(60)  # Проверяем каждую минуту
+        
+        uptime = time.time() - start_time
+        if uptime >= RESTART_INTERVAL:
+            logger.info("🔄 Автоматический перезапуск бота через 12 часов работы")
+            
+            # Отправляем сообщение в лог о перезапуске
+            try:
+                await app.send_message(
+                    chat_id=message.from_user.id if 'message' in locals() else "me",
+                    text="🔄 Бот перезапускается по расписанию (каждые 12 часов)"
+                )
+            except:
+                pass
+            
+            # Элегантный выход
+            os._exit(0)
+
 # ------------------------- вспомогательные функции -------------------------
 def extract_first_url(text: str) -> str:
     match = re.search(r"(https?://[^\s]+)", text)
@@ -61,54 +87,27 @@ def normalize_url(url: str) -> str:
         return f"https://www.youtube.com/watch?v={video_id}"
     return url
 
-# ✅ ИСПРАВЛЕНО: YouTube функции
 def get_youtube_direct_url(url: str) -> str:
-    """Получаем прямую ссылку на YouTube видео"""
-    ydl_opts = {
-        "quiet": True, 
-        "skip_download": True, 
-        "format": "best[height<=720][ext=mp4]/best[ext=mp4]/best",
-        "noplaylist": True
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            # Ищем подходящий формат
-            if 'url' in info:
-                return info['url']
-            elif 'formats' in info:
-                # Выбираем лучший mp4 формат
-                formats = [f for f in info['formats'] if f.get('ext') == 'mp4' and f.get('height', 0) <= 720]
-                if formats:
-                    best_format = max(formats, key=lambda x: x.get('height', 0))
-                    return best_format['url']
-            raise Exception("Не удалось найти подходящую ссылку")
-    except Exception as e:
-        logger.error(f"Ошибка получения YouTube URL: {e}")
-        raise
+    ydl_opts = {"quiet": True, "skip_download": True, "format": "mp4[height<=720]/best[ext=mp4]/best"}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        return info.get("url")
 
 def download_youtube_video(url: str, out_path: str) -> str:
-    """Скачиваем YouTube видео"""
     ydl_opts = {
         "outtmpl": os.path.join(out_path, "%(title).50s.%(ext)s"),
-        "format": "best[height<=720][ext=mp4]/best[ext=mp4]/best",
+        "format": "best[height<=720][ext=mp4]/best[ext=mp4]",
         "noplaylist": True,
-        "quiet": False,  # Включаем логи для отладки
-        "retries": 3,
+        "quiet": True,
+        "retries": 1,
         "merge_output_format": "mp4",
         "concurrent_fragment_downloads": 4,
     }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            logger.info(f"✅ YouTube видео скачано: {filename}")
-            return filename
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания YouTube: {e}")
-        raise
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return ydl.prepare_filename(info)
 
-# ✅ Instagram функции с правильным использованием cookies
+# ✅ ИСПРАВЛЕНО: Instagram функции с правильным использованием cookies
 def check_cookies_file():
     """Проверяем наличие cookies файла"""
     if not os.path.exists("cookies.txt"):
@@ -178,31 +177,11 @@ def cleanup_old_processed_messages():
         processed_messages = set(list(processed_messages)[-500:])
         logger.info("🧹 Очищены старые записи из processed_messages")
 
-# ------------------------- АВТОМАТИЧЕСКИЙ ПЕРЕЗАПУСК -------------------------
-def schedule_restart():
-    """Планировщик для автоматического перезапуска каждые 12 часов"""
-    def restart_job():
-        logger.info("🔄 Запланированный перезапуск бота...")
-        os._exit(0)  # Завершаем процесс для перезапуска
-    
-    # Настраиваем перезапуск каждые 12 часов
-    schedule.every(12).hours.do(restart_job)
-    
-    def run_scheduler():
-        while True:
-            schedule.run_pending()
-            time.sleep(60)  # Проверяем каждую минуту
-    
-    # Запускаем планировщик в отдельном потоке
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
-    logger.info("⏰ Планировщик перезапуска запущен (каждые 12 часов)")
-
 # ------------------------- ИСПРАВЛЕННЫЕ ХЭНДЛЕРЫ -------------------------
 
 @app.on_message(filters.command("start"))
 async def start(_, message):
-    """Обработчик команды /start"""
+    """Обработчик команды /start - ИСПРАВЛЕНО: предотвращение двойного выполнения"""
     message_id = f"start_{message.id}_{message.from_user.id}"
     
     if message_id in processed_messages:
@@ -210,18 +189,24 @@ async def start(_, message):
         
     processed_messages.add(message_id)
     
+    # Показываем время до перезапуска
+    uptime = time.time() - start_time
+    hours_left = max(0, (12 * 60 * 60 - uptime) / 3600)
+    
     welcome_msg = await message.reply_text(
-        "Привет! 👋\n\n"
-        "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
-        "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
-        "⚡ Бот автоматически удалит твою ссылку после скачивания!"
+        f"Привет! 👋\n\n"
+        f"📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
+        f"🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
+        f"⚡ Бот автоматически удалит твою ссылку после скачивания!\n"
+        f"🔄 Автоперезапуск через: {hours_left:.1f} часов"
     )
     
+    # Очистка старых записей
     cleanup_old_processed_messages()
 
 @app.on_message(filters.command(["help", "info"]))
 async def help_command(_, message):
-    """Обработчик других команд"""
+    """Обработчик других команд - ИСПРАВЛЕНО: предотвращение двойного выполнения"""
     message_id = f"help_{message.id}_{message.from_user.id}"
     
     if message_id in processed_messages:
@@ -235,40 +220,67 @@ async def help_command(_, message):
         "• Instagram видео/реельс\n" 
         "• YouTube видео\n\n"
         "📌 Бот автоматически удалит твою ссылку после скачивания\n"
-        "⚡ Скачивание работает быстро и бесплатно!"
+        "⚡ Скачивание работает быстро и бесплатно!\n"
+        "🔄 Бот автоматически перезапускается каждые 12 часов"
     )
     await message.reply_text(help_text)
     
+    # Очистка старых записей
     cleanup_old_processed_messages()
+
+@app.on_message(filters.command("status"))
+async def status_command(_, message):
+    """Показывает статус бота и время до перезапуска"""
+    uptime = time.time() - start_time
+    hours_worked = uptime / 3600
+    hours_left = max(0, 12 - hours_worked)
+    
+    status_text = (
+        f"🤖 **Статус бота**\n\n"
+        f"⏱️ Работает: {hours_worked:.1f} часов\n"
+        f"🔄 Перезапуск через: {hours_left:.1f} часов\n"
+        f"📊 Обработано сообщений: {len(processed_messages)}\n"
+        f"👤 Активных пользователей: {len(user_processing)}"
+    )
+    await message.reply_text(status_text)
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(_, message):
-    """Обработчик текстовых сообщений от пользователей"""
+    """Обработчик текстовых сообщений от пользователей - ИСПРАВЛЕНО: предотвращение двойной обработки"""
     
+    # Создаем уникальный идентификатор сообщения
     message_id = f"text_{message.id}_{message.from_user.id}"
     
+    # Проверяем, не обрабатывалось ли уже это сообщение
     if message_id in processed_messages:
         return
         
+    # Пропускаем команды (они обрабатываются отдельно)
     if message.text and message.text.startswith('/'):
         return
     
     user_id = message.from_user.id
     text = message.text.strip()
     
+    # Извлекаем URL
     url = extract_first_url(text)
     if not url or not any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
+        # НЕ удаляем обычные текстовые сообщения, только ссылки
         return
 
+    # Помечаем сообщение как обрабатываемое
     processed_messages.add(message_id)
     
+    # Проверяем, не обрабатывается ли уже запрос от этого пользователя
     if user_id in user_processing and user_processing[user_id].get('processing'):
         temp_msg = await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
         await asyncio.sleep(3)
         await temp_msg.delete()
+        # Удаляем из обработанных, чтобы можно было повторить
         processed_messages.discard(message_id)
         return
 
+    # Помечаем пользователя как обрабатываемого
     user_processing[user_id] = {'processing': True}
     
     status = None
@@ -278,29 +290,23 @@ async def handle_text(_, message):
         status = await message.reply_text("⏳ Обработка видео...")
         
         if "youtube" in url or "youtu.be" in url:
-            # YouTube обработка - ИСПРАВЛЕННАЯ
+            # YouTube обработка
             try:
-                await status.edit_text("🔗 Получаю прямую ссылку YouTube...")
+                # Пытаемся отправить прямую ссылку
                 direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
-                
-                if direct_url:
-                    await status.edit_text("📤 Отправляю видео...")
-                    await message.reply_video(
-                        direct_url, 
-                        caption="📥 YouTube видео скачано через @azams_bot"
-                    )
-                    logger.info("✅ YouTube видео отправлено через прямую ссылку")
-                else:
-                    raise Exception("Не удалось получить прямую ссылку")
+                await message.reply_video(
+                    direct_url, 
+                    caption="📥 YouTube видео скачано через @azams_bot"
+                )
+                logger.info("✅ YouTube видео отправлено через прямую ссылку")
                 
             except Exception as e:
-                logger.warning(f"Прямая ссылка YouTube не сработала: {e}, скачиваю файл...")
-                await status.edit_text("📥 Скачиваю YouTube видео...")
+                # Если прямая ссылка не работает, скачиваем файл
+                await status.edit_text("📥 Скачиваю видео...")
                 tmp_dir = tempfile.mkdtemp()
                 
                 try:
                     file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
-                    await status.edit_text("📤 Отправляю видео...")
                     await message.reply_video(
                         file_path, 
                         caption="📥 YouTube видео скачано через @azams_bot"
@@ -313,6 +319,7 @@ async def handle_text(_, message):
                     os.rmdir(tmp_dir)
                     
                 except Exception as download_error:
+                    # Очистка при ошибке
                     if os.path.exists(tmp_dir):
                         for file in os.listdir(tmp_dir):
                             os.remove(os.path.join(tmp_dir, file))
@@ -328,10 +335,9 @@ async def handle_text(_, message):
                 return
                 
             try:
-                await status.edit_text("🔗 Получаю прямую ссылку Instagram...")
+                # Сначала пытаемся получить прямую ссылку
                 direct_url = await asyncio.to_thread(get_instagram_url, url)
                 if direct_url:
-                    await status.edit_text("📤 Отправляю видео...")
                     await message.reply_video(
                         direct_url, 
                         caption="📥 Instagram видео скачано через @azams_bot"
@@ -341,31 +347,32 @@ async def handle_text(_, message):
                     raise Exception("Не удалось получить прямую ссылку")
                 
             except Exception as e:
-                logger.warning(f"Прямая ссылка Instagram не сработала: {e}, скачиваю файл...")
-                await status.edit_text("📥 Скачиваю Instagram видео...")
+                logger.warning(f"Прямая ссылка не сработала: {e}, скачиваю файл...")
+                await status.edit_text("📥 Скачиваю видео...")
                 tmp_dir = tempfile.mkdtemp()
                 
                 try:
                     file_path = await asyncio.to_thread(download_instagram_video, url, tmp_dir)
-                    await status.edit_text("📤 Отправляю видео...")
                     await message.reply_video(
                         file_path,
                         caption="📥 Instagram видео скачано через @azams_bot"
                     )
                     logger.info("✅ Instagram видео отправлено как файл")
                     
+                    # Очистка временных файлов
                     if os.path.exists(file_path):
                         os.remove(file_path)
                     os.rmdir(tmp_dir)
                     
                 except Exception as download_error:
+                    # Очистка при ошибке
                     if os.path.exists(tmp_dir):
                         for file in os.listdir(tmp_dir):
                             os.remove(os.path.join(tmp_dir, file))
                         os.rmdir(tmp_dir)
                     raise download_error
 
-        # Успешное завершение
+        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем только сообщение пользователя со ссылкой
         await message.delete()
         logger.info(f"✅ Обработка завершена для пользователя {user_id}")
 
@@ -381,19 +388,23 @@ async def handle_text(_, message):
                 pass
                 
     finally:
+        # Удаляем статус сообщение
         if status:
             try:
                 await status.delete()
             except:
                 pass
                 
+        # Снимаем блокировку обработки
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
             
+        # Очищаем старые записи из processed_messages
         cleanup_old_processed_messages()
 
-# ------------------------- ЗАПУСК -------------------------
-if __name__ == "__main__":
+# ------------------------- ЗАПУСК С АВТОПЕРЕЗАПУСКОМ -------------------------
+async def main():
+    """Основная функция с автоперезапуском"""
     # Удаляем старые файлы сессии перед запуском
     old_sessions = ["fast_bot.session", "fast_bot.session-journal"]
     for session_file in old_sessions:
@@ -410,17 +421,25 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
-    # Запускаем планировщик перезапуска
-    schedule_restart()
+    logger.info("🚀 Запуск бота с автоперезапуском каждые 12 часов...")
     
-    logger.info("🚀 Запуск бота с исправленным YouTube и автоматическим перезапуском...")
-    logger.info("⏰ Бот будет автоматически перезапускаться каждые 12 часов")
+    # Запускаем задачу автоперезапуска
+    asyncio.create_task(auto_restart())
     
-    try:
-        app.run()
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска бота: {e}")
-        # Ждем немного перед завершением
-        time.sleep(5)
-        os._exit(1)
+    # Запускаем бота
+    await app.start()
+    logger.info("✅ Бот успешно запущен!")
+    
+    # Ждем завершения
+    await asyncio.Event().wait()
 
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("⏹️ Бот остановлен вручную")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")
+        # Ждем перед перезапуском
+        time.sleep(10)
+        os._exit(1)
