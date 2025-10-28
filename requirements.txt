@@ -2,3 +2,4 @@ tgcrypto
 yt-dlp
 pyrogram
 requests
+schedule
