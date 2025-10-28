@@ -414,16 +414,16 @@ async def handle_text(_, message):
                 error_msg = await message.reply_text(f"❌ Ошибка: {str(e)}")
                 await asyncio.sleep(5)
                 await error_msg.delete()
-            except:
-                pass
+            except Exception as delete_error:
+                logger.warning(f"Не удалось удалить сообщение об ошибке: {delete_error}")
                 
     finally:
         # Удаляем статус сообщение
         if status:
             try:
                 await status.delete()
-            except:
-                pass
+            except Exception as delete_error:
+                logger.warning(f"Не удалось удалить статус сообщение: {delete_error}")
                 
         # Снимаем блокировку обработки
         if user_id in user_processing:
