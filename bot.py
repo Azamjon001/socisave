@@ -6,6 +6,7 @@ import yt_dlp
 import re
 import time
 import random
+import requests
 from pyrogram import Client, filters
 from pyrogram.errors import BadRequest, BadMsgNotification
 
@@ -42,52 +43,21 @@ app = SafeClient(
     sleep_threshold=15
 )
 
-# ------------------------- ИСПРАВЛЕННЫЕ YOUTUBE ФУНКЦИИ -------------------------
+# ------------------------- YOUTUBE ФУНКЦИИ -------------------------
 
-def download_youtube_video_enhanced(url: str, out_path: str) -> str:
-    """Улучшенное скачивание YouTube с обходом ограничений"""
+def download_youtube_video(url: str, out_path: str) -> str:
+    """Скачивание YouTube видео"""
     ydl_opts = {
         "outtmpl": os.path.join(out_path, "%(title).100s.%(ext)s"),
-        # Приоритетные форматы для обхода 403 ошибки
-        "format": "best[height<=720][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best",
+        "format": "best[height<=720]/best",
         "noplaylist": True,
         "quiet": False,
         "ignoreerrors": True,
-        "retries": 10,
-        "fragment_retries": 10,
-        "skip_unavailable_fragments": True,
-        "continue_dl": True,
-        "no_overwrites": True,
-        "merge_output_format": "mp4",
-        # Настройки для обхода ограничений
-        "throttled_rate": "100K",
-        "http_chunk_size": 10485760,
-        # Улучшенные заголовки
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://www.youtube.com/",
-            "Origin": "https://www.youtube.com",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-site",
-        },
-        # Настройки для YouTube
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"],
-                "player_skip": ["configs", "webpage"],
-            }
-        },
+        "retries": 3,
     }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Задержка перед началом скачивания
-            time.sleep(random.uniform(1, 3))
-            
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             
@@ -99,65 +69,85 @@ def download_youtube_video_enhanced(url: str, out_path: str) -> str:
                 os.remove(filename)
                 raise Exception(f"Файл пустой: {filename}")
                 
-            logger.info(f"✅ YouTube видео скачано: {filename} ({file_size} bytes)")
+            logger.info(f"✅ YouTube видео скачано: {filename}")
             return filename
             
     except Exception as e:
-        logger.error(f"❌ Ошибка скачивания YouTube: {e}")
+        logger.error(f"❌ Ошибка YouTube: {e}")
         raise
 
-def download_youtube_video_simple(url: str, out_path: str) -> str:
-    """Простой метод скачивания для сложных случаев"""
-    ydl_opts = {
-        "outtmpl": os.path.join(out_path, "%(title).100s.%(ext)s"),
-        # Самые простые форматы
-        "format": "worst[ext=mp4]/worstvideo[ext=mp4]+worstaudio/best[height<=360]",
-        "noplaylist": True,
-        "quiet": False,
-        "ignoreerrors": True,
-        "retries": 15,
-        "fragment_retries": 15,
-        "skip_unavailable_fragments": True,
-        "continue_dl": True,
-        "no_overwrites": True,
-        "merge_output_format": "mp4",
-        # Медленная скорость для обхода блокировок
-        "throttled_rate": "50K",
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.5",
-        },
-    }
+# ------------------------- INSTAGRAM АЛЬТЕРНАТИВНЫЕ МЕТОДЫ -------------------------
+
+def check_cookies_file():
+    """Проверяем cookies файл"""
+    if not os.path.exists("cookies.txt"):
+        return False
+    
+    file_size = os.path.getsize("cookies.txt")
+    if file_size == 0:
+        return False
+        
+    return True
+
+def try_instagram_public(url: str, out_path: str):
+    """Пробуем скачать через публичные методы (без cookies)"""
+    try:
+        ydl_opts = {
+            "outtmpl": os.path.join(out_path, "instagram_%(title)s.%(ext)s"),
+            "quiet": False,
+            "ignoreerrors": True,
+            "retries": 2,
+            "extract_flat": False,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            # Ищем любой скачанный файл
+            for file in os.listdir(out_path):
+                file_path = os.path.join(out_path, file)
+                if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                    return file_path, info
+            
+            raise Exception("Не удалось скачать через публичный метод")
+            
+    except Exception as e:
+        raise Exception(f"Публичный метод не сработал: {e}")
+
+def try_instagram_with_cookies(url: str, out_path: str):
+    """Пробуем скачать с cookies"""
+    if not check_cookies_file():
+        raise Exception("Cookies файл не найден")
     
     try:
+        ydl_opts = {
+            "outtmpl": os.path.join(out_path, "instagram_%(title)s.%(ext)s"),
+            "cookiefile": "cookies.txt",
+            "quiet": False,
+            "ignoreerrors": True,
+            "retries": 3,
+            "extract_flat": False,
+        }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Большая задержка для простого метода
-            time.sleep(random.uniform(3, 5))
-            
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
             
-            if not os.path.exists(filename):
-                raise Exception(f"Файл не создан: {filename}")
-                
-            file_size = os.path.getsize(filename)
-            if file_size == 0:
-                os.remove(filename)
-                raise Exception(f"Файл пустой: {filename}")
-                
-            logger.info(f"✅ YouTube видео скачано (простой метод): {filename}")
-            return filename
+            # Ищем любой скачанный файл
+            for file in os.listdir(out_path):
+                file_path = os.path.join(out_path, file)
+                if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                    return file_path, info
+            
+            raise Exception("Не удалось скачать даже с cookies")
             
     except Exception as e:
-        logger.error(f"❌ Ошибка простого метода: {e}")
-        raise
+        raise Exception(f"Метод с cookies не сработал: {e}")
 
-def try_youtube_download(url: str, out_path: str) -> str:
-    """Пробуем разные методы скачивания YouTube"""
+def download_instagram_all_methods(url: str, out_path: str):
+    """Пробуем все методы скачивания Instagram"""
     methods = [
-        ("Улучшенный метод", download_youtube_video_enhanced),
-        ("Простой метод", download_youtube_video_simple),
+        ("Публичный метод", try_instagram_public),
+        ("Метод с cookies", try_instagram_with_cookies),
     ]
     
     last_error = None
@@ -172,41 +162,44 @@ def try_youtube_download(url: str, out_path: str) -> str:
             time.sleep(2)
             continue
     
-    raise Exception(f"Все методы YouTube не сработали. Последняя ошибка: {last_error}")
+    raise Exception(f"Все методы Instagram не сработали. Instagram временно недоступен.")
 
-# ------------------------- INSTAGRAM ФУНКЦИИ -------------------------
+# ------------------------- INSTAGRAM WEB API ALTERNATIVE -------------------------
 
-def check_cookies_file():
-    if not os.path.exists("cookies.txt"):
-        return False
-    return os.path.getsize("cookies.txt") > 0
-
-def try_instagram_download(url: str, out_path: str):
-    """Пробуем скачать Instagram"""
-    if not check_cookies_file():
-        raise Exception("Требуется файл cookies.txt")
-    
-    ydl_opts = {
-        "outtmpl": os.path.join(out_path, "instagram_%(title)s.%(ext)s"),
-        "cookiefile": "cookies.txt",
-        "quiet": False,
-        "ignoreerrors": True,
-        "retries": 3,
-    }
-    
+def download_instagram_fallback(url: str) -> str:
+    """Альтернативный метод через веб-запросы (для публичных постов)"""
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            
-            for file in os.listdir(out_path):
-                file_path = os.path.join(out_path, file)
-                if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
-                    return file_path, info
-            
-            raise Exception("Не удалось скачать Instagram контент")
-            
+        # Используем сторонний сервис как запасной вариант
+        # Это пример - можно добавить реальный API
+        service_url = f"https://instasupersave.com/api/ig"
+        
+        response = requests.post(service_url, json={"url": url}, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success') and data.get('url'):
+                # Скачиваем медиа по полученной ссылке
+                media_url = data['url']
+                response = requests.get(media_url, stream=True, timeout=30)
+                
+                if response.status_code == 200:
+                    # Сохраняем временный файл
+                    ext = 'mp4' if 'video' in response.headers.get('content-type', '') else 'jpg'
+                    file_path = os.path.join(tempfile.gettempdir(), f"instagram_{int(time.time())}.{ext}")
+                    
+                    with open(file_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    
+                    if os.path.getsize(file_path) > 0:
+                        return file_path
+                    
+                    os.remove(file_path)
+                
+        raise Exception("Альтернативный метод не сработал")
+        
     except Exception as e:
-        raise Exception(f"Instagram ошибка: {e}")
+        raise Exception(f"Альтернативный метод ошибка: {e}")
 
 # ------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------
 
@@ -289,16 +282,36 @@ async def start(client, message):
         
     processed_messages.add(message_id)
     
-    await message.reply_text(
-        "🎥 **YouTube Video Downloader**\n\n"
-        "📥 Отправьте ссылку на YouTube видео и я скачаю его для вас!\n\n"
-        "✅ **Поддерживается:**\n"
-        "• YouTube видео любого качества\n"
-        "• YouTube Shorts\n"
-        "• Музыкальные клипы\n\n"
-        "⚡ Быстрое и надежное скачивание!\n"
-        "🔄 Автоперезапуск каждые 12 часов"
+    has_cookies = check_cookies_file()
+    
+    welcome_text = (
+        "Привет! 👋\n\n"
+        "📥 **YouTube:** ✅ Всегда работает!\n"
+        "• Видео, Shorts, музыка\n"
+        "• Быстрое скачивание\n\n"
     )
+    
+    if has_cookies:
+        welcome_text += (
+            "📸 **Instagram:** ⚠️ Ограниченно\n"
+            "• Публичные посты (иногда)\n"
+            "• Требуются актуальные cookies\n"
+            "• Может не работать из-за ограничений Instagram\n\n"
+        )
+    else:
+        welcome_text += (
+            "📸 **Instagram:** ❌ Требует настройки\n"
+            "• Нужен файл cookies.txt\n"
+            "• Только публичные посты\n"
+            "• Часто бывают ограничения\n\n"
+        )
+    
+    welcome_text += (
+        "⚡ Просто отправь ссылку!\n"
+        "🔄 Бот перезапускается каждые 12 часов"
+    )
+    
+    await message.reply_text(welcome_text)
 
 @app.on_message(filters.command(["help", "info"]))
 async def help_command(client, message):
@@ -309,29 +322,65 @@ async def help_command(client, message):
         
     processed_messages.add(message_id)
     
-    await message.reply_text(
-        "🤖 **Помощь по YouTube боту**\n\n"
-        "🎥 **Как использовать:**\n"
-        "1. Найдите видео на YouTube\n"
-        "2. Скопируйте ссылку из адресной строки\n"
-        "3. Отправьте ссылку боту\n"
-        "4. Получите скачанное видео!\n\n"
-        "📹 **Поддерживаемые форматы:**\n"
-        "• Видео до 720p качества\n"
-        "• Короткие видео (Shorts)\n"
-        "• Длинные видео\n\n"
-        "⚡ Просто отправьте ссылку и наслаждайтесь!"
+    has_cookies = check_cookies_file()
+    
+    help_text = (
+        "🤖 **Помощь по боту**\n\n"
+        "🎥 **YouTube (рекомендуется):**\n"
+        "• ✅ Видео любой длительности\n"
+        "• ✅ YouTube Shorts\n"
+        "• ✅ Музыкальные клипы\n"
+        "• ✅ Стабильная работа\n\n"
     )
+    
+    if has_cookies:
+        help_text += (
+            "📸 **Instagram (ограниченно):**\n"
+            "• ⚠️ Только публичные посты\n"
+            "• ⚠️ Может не работать\n"
+            "• ⚠️ Требует актуальные cookies\n"
+            "• ❌ Приватные аккаунты\n"
+            "• ❌ Частые ограничения\n\n"
+        )
+    else:
+        help_text += (
+            "📸 **Instagram:**\n"
+            "• ❌ Требует файл cookies.txt\n"
+            "• ❌ Сложная настройка\n"
+            "• ❌ Частые ошибки\n\n"
+        )
+    
+    help_text += (
+        "💡 **Совет:** Используйте YouTube для надежного скачивания!\n"
+        "📝 Просто отправьте ссылку на YouTube видео."
+    )
+    
+    await message.reply_text(help_text)
 
 @app.on_message(filters.command("test"))
 async def test_command(client, message):
-    """Тест работоспособности"""
-    await message.reply_text(
-        "🧪 **Тест YouTube бота**\n\n"
-        "Бот готов к работе! 🎉\n\n"
-        "Отправьте любую ссылку на YouTube видео для проверки.\n"
-        "Например: https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-    )
+    """Тестовая команда для проверки ссылок"""
+    try:
+        text = message.text.split(' ', 1)
+        if len(text) < 2:
+            await message.reply_text("📝 Использование: /test <ссылка>")
+            return
+        
+        url = text[1].strip()
+        
+        if "youtube.com" in url or "youtu.be" in url:
+            await message.reply_text("✅ YouTube ссылка - должна работать!")
+        elif "instagram.com" in url:
+            has_cookies = check_cookies_file()
+            if has_cookies:
+                await message.reply_text("⚠️ Instagram ссылка - может не работать из-за ограничений платформы")
+            else:
+                await message.reply_text("❌ Instagram ссылка - требуется cookies.txt файл")
+        else:
+            await message.reply_text("❌ Неподдерживаемая ссылка")
+            
+    except Exception as e:
+        await message.reply_text(f"❌ Ошибка: {e}")
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(client, message):
@@ -350,15 +399,15 @@ async def handle_text(client, message):
     if not url:
         return
 
-    # Поддерживаем только YouTube
-    if not any(domain in url for domain in ["youtube.com", "youtu.be"]):
+    # Проверяем поддерживаемые домены
+    supported_domains = ["youtube.com", "youtu.be", "instagram.com"]
+    if not any(domain in url for domain in supported_domains):
         await message.reply_text(
-            "❌ Поддерживаются только YouTube ссылки\n\n"
-            "🎥 Пожалуйста, отправьте ссылку на:\n"
-            "• YouTube видео (youtube.com/watch?v=...)\n"
-            "• YouTube Shorts (youtube.com/shorts/...)\n"
-            "• Сокращенная ссылка (youtu.be/...)\n\n"
-            "⚡ YouTube работает быстро и надежно!"
+            "❌ Неподдерживаемая ссылка\n\n"
+            "🎥 **Поддерживается:**\n"
+            "• YouTube (youtube.com, youtu.be) - ✅ Рекомендуется\n"
+            "• Instagram (instagram.com) - ⚠️ Ограниченно\n\n"
+            "💡 Для надежной работы используйте YouTube ссылки"
         )
         return
 
@@ -376,67 +425,109 @@ async def handle_text(client, message):
     
     try:
         url = normalize_url(url)
-        status = await message.reply_text("⏳ Обработка YouTube ссылки...")
+        status = await message.reply_text("⏳ Обработка ссылки...")
         
-        # Только YouTube обработка
-        tmp_dir = tempfile.mkdtemp()
-        file_path = None
-        
-        try:
-            await status.edit_text("🔍 Анализирую видео...")
+        if "youtube" in url or "youtu.be" in url:
+            # YouTube обработка - ОСНОВНОЙ РАБОЧИЙ МЕТОД
+            tmp_dir = tempfile.mkdtemp()
+            file_path = None
             
-            # Пробуем скачать YouTube
-            file_path = await asyncio.to_thread(try_youtube_download, url, tmp_dir)
-            
-            await status.edit_text("📤 Отправляю видео...")
-            
-            await safe_send_video(
-                client,
-                message.chat.id,
-                file_path,
-                caption="📥 YouTube видео скачано через @azams_bot"
-            )
-            logger.info("✅ YouTube видео успешно отправлено")
-
-        except Exception as e:
-            logger.error(f"❌ YouTube ошибка: {e}")
-            
-            # Конкретные сообщения для разных ошибок
-            error_msg = str(e)
-            if "403" in error_msg:
-                user_msg = (
-                    "❌ YouTube временно ограничил доступ\n\n"
-                    "🔧 **Что можно сделать:**\n"
-                    "• Попробуйте другую ссылку\n"
-                    "• Подождите несколько минут\n"
-                    "• Попробуйте видео с другим качеством\n\n"
-                    "⚡ Обычно это временное ограничение"
+            try:
+                await status.edit_text("📥 Скачиваю YouTube видео...")
+                file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
+                
+                await status.edit_text("📤 Отправляю видео...")
+                await safe_send_video(
+                    client,
+                    message.chat.id,
+                    file_path,
+                    caption="📥 YouTube видео скачано через @azams_bot"
                 )
-            elif "Private" in error_msg or "private" in error_msg:
-                user_msg = "❌ Это приватное видео. Доступ ограничен."
-            elif "Unavailable" in error_msg:
-                user_msg = "❌ Видео недоступно или удалено."
-            elif "too long" in error_msg.lower():
-                user_msg = "❌ Видео слишком длинное. Попробуйте shorter video."
-            else:
-                user_msg = f"❌ Не удалось скачать видео\n\nПричина: {error_msg}"
+                logger.info("✅ YouTube видео успешно отправлено")
+
+            except Exception as e:
+                logger.error(f"❌ YouTube ошибка: {e}")
+                raise Exception(f"❌ Не удалось скачать YouTube видео\n\nПричина: {str(e)}")
+                
+            finally:
+                # Очистка
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except:
+                        pass
+                if os.path.exists(tmp_dir):
+                    try:
+                        for file in os.listdir(tmp_dir):
+                            os.remove(os.path.join(tmp_dir, file))
+                        os.rmdir(tmp_dir)
+                    except:
+                        pass
+                
+        elif "instagram.com" in url:
+            # Instagram обработка - ЗАПАСНОЙ МЕТОД
+            tmp_dir = tempfile.mkdtemp()
+            file_path = None
             
-            raise Exception(user_msg)
-            
-        finally:
-            # Очистка
-            if file_path and os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
-            if os.path.exists(tmp_dir):
-                try:
-                    for file in os.listdir(tmp_dir):
-                        os.remove(os.path.join(tmp_dir, file))
-                    os.rmdir(tmp_dir)
-                except:
-                    pass
+            try:
+                await status.edit_text("⚠️ Пробую скачать Instagram...")
+                
+                # Пробуем все методы
+                file_path, info = await asyncio.to_thread(download_instagram_all_methods, url, tmp_dir)
+                
+                if not file_path:
+                    raise Exception("Все методы не сработали")
+                
+                # Определяем тип медиа и отправляем
+                media_type = get_media_type(file_path)
+                await status.edit_text("📤 Отправляю...")
+                
+                if media_type == "video":
+                    await safe_send_video(
+                        client,
+                        message.chat.id,
+                        file_path,
+                        caption="📥 Instagram видео скачано через @azams_bot"
+                    )
+                else:
+                    await safe_send_photo(
+                        client,
+                        message.chat.id,
+                        file_path,
+                        caption="📸 Instagram фото скачано через @azams_bot"
+                    )
+
+            except Exception as e:
+                logger.error(f"❌ Instagram ошибка: {e}")
+                
+                # Предлагаем использовать YouTube вместо Instagram
+                raise Exception(
+                    "❌ Instagram временно недоступен\n\n"
+                    "📸 **Проблемы с Instagram:**\n"
+                    "• Instagram блокирует скачивание\n"
+                    "• Требует постоянное обновление cookies\n"
+                    "• Частые ограничения доступа\n\n"
+                    "🎥 **Рекомендуем:**\n"
+                    "• Использовать YouTube ссылки\n"
+                    "• YouTube работает стабильно и быстро\n"
+                    "• Поддерживает видео любого качества\n\n"
+                    "💡 Отправьте ссылку на YouTube видео!"
+                )
+                
+            finally:
+                # Очистка
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except:
+                        pass
+                if os.path.exists(tmp_dir):
+                    try:
+                        for file in os.listdir(tmp_dir):
+                            os.remove(os.path.join(tmp_dir, file))
+                        os.rmdir(tmp_dir)
+                    except:
+                        pass
 
         # Успешное завершение
         await message.delete()
@@ -447,7 +538,7 @@ async def handle_text(client, message):
         if status:
             try:
                 error_msg = await message.reply_text(str(e))
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)  # Дольше показываем сообщение об ошибке
                 await error_msg.delete()
             except:
                 pass
@@ -473,6 +564,13 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.warning(f"Не удалось удалить {session_file}: {e}")
     
-    logger.info("🚀 Запуск YouTube бота с улучшенной обработкой 403 ошибок...")
-    logger.info("🎥 Бот готов к скачиванию YouTube видео!")
+    # Проверка cookies
+    has_cookies = check_cookies_file()
+    if has_cookies:
+        logger.info("✅ Файл cookies.txt найден")
+    else:
+        logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
+    
+    logger.info("🚀 Запуск бота с акцентом на YouTube...")
+    logger.info("💡 Instagram работает ограниченно из-за блокировок платформы")
     app.run()
