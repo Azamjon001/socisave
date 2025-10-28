@@ -7,6 +7,8 @@ import re
 import random
 import time
 import requests
+import schedule
+import threading
 from pyrogram import Client, filters
 from pyrogram.errors import BadRequest, BadMsgNotification
 
@@ -59,27 +61,54 @@ def normalize_url(url: str) -> str:
         return f"https://www.youtube.com/watch?v={video_id}"
     return url
 
+# ✅ ИСПРАВЛЕНО: YouTube функции
 def get_youtube_direct_url(url: str) -> str:
-    ydl_opts = {"quiet": True, "skip_download": True, "format": "mp4[height<=720]/best[ext=mp4]/best"}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return info.get("url")
+    """Получаем прямую ссылку на YouTube видео"""
+    ydl_opts = {
+        "quiet": True, 
+        "skip_download": True, 
+        "format": "best[height<=720][ext=mp4]/best[ext=mp4]/best",
+        "noplaylist": True
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            # Ищем подходящий формат
+            if 'url' in info:
+                return info['url']
+            elif 'formats' in info:
+                # Выбираем лучший mp4 формат
+                formats = [f for f in info['formats'] if f.get('ext') == 'mp4' and f.get('height', 0) <= 720]
+                if formats:
+                    best_format = max(formats, key=lambda x: x.get('height', 0))
+                    return best_format['url']
+            raise Exception("Не удалось найти подходящую ссылку")
+    except Exception as e:
+        logger.error(f"Ошибка получения YouTube URL: {e}")
+        raise
 
 def download_youtube_video(url: str, out_path: str) -> str:
+    """Скачиваем YouTube видео"""
     ydl_opts = {
         "outtmpl": os.path.join(out_path, "%(title).50s.%(ext)s"),
-        "format": "best[height<=720][ext=mp4]/best[ext=mp4]",
+        "format": "best[height<=720][ext=mp4]/best[ext=mp4]/best",
         "noplaylist": True,
-        "quiet": True,
-        "retries": 1,
+        "quiet": False,  # Включаем логи для отладки
+        "retries": 3,
         "merge_output_format": "mp4",
         "concurrent_fragment_downloads": 4,
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            logger.info(f"✅ YouTube видео скачано: {filename}")
+            return filename
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания YouTube: {e}")
+        raise
 
-# ✅ ИСПРАВЛЕНО: Instagram функции с правильным использованием cookies
+# ✅ Instagram функции с правильным использованием cookies
 def check_cookies_file():
     """Проверяем наличие cookies файла"""
     if not os.path.exists("cookies.txt"):
@@ -149,39 +178,50 @@ def cleanup_old_processed_messages():
         processed_messages = set(list(processed_messages)[-500:])
         logger.info("🧹 Очищены старые записи из processed_messages")
 
+# ------------------------- АВТОМАТИЧЕСКИЙ ПЕРЕЗАПУСК -------------------------
+def schedule_restart():
+    """Планировщик для автоматического перезапуска каждые 12 часов"""
+    def restart_job():
+        logger.info("🔄 Запланированный перезапуск бота...")
+        os._exit(0)  # Завершаем процесс для перезапуска
+    
+    # Настраиваем перезапуск каждые 12 часов
+    schedule.every(12).hours.do(restart_job)
+    
+    def run_scheduler():
+        while True:
+            schedule.run_pending()
+            time.sleep(60)  # Проверяем каждую минуту
+    
+    # Запускаем планировщик в отдельном потоке
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    logger.info("⏰ Планировщик перезапуска запущен (каждые 12 часов)")
+
 # ------------------------- ИСПРАВЛЕННЫЕ ХЭНДЛЕРЫ -------------------------
 
 @app.on_message(filters.command("start"))
-async def start(client, message):
+async def start(_, message):
     """Обработчик команды /start"""
-    logger.info(f"📩 Получена команда /start от {message.from_user.id}")
-    
     message_id = f"start_{message.id}_{message.from_user.id}"
     
     if message_id in processed_messages:
-        logger.info("🔄 Пропускаем дублирующее сообщение /start")
         return
         
     processed_messages.add(message_id)
     
-    try:
-        welcome_msg = await message.reply_text(
-            "Привет! 👋\n\n"
-            "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
-            "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
-            "⚡ Бот автоматически удалит твою ссылку после скачивания!"
-        )
-        logger.info(f"✅ Отправлено приветственное сообщение пользователю {message.from_user.id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки приветствия: {e}")
+    welcome_msg = await message.reply_text(
+        "Привет! 👋\n\n"
+        "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
+        "🎥 Или ссылку на YouTube — тоже скачаю видео.\n\n"
+        "⚡ Бот автоматически удалит твою ссылку после скачивания!"
+    )
     
     cleanup_old_processed_messages()
 
 @app.on_message(filters.command(["help", "info"]))
-async def help_command(client, message):
+async def help_command(_, message):
     """Обработчик других команд"""
-    logger.info(f"📩 Получена команда help от {message.from_user.id}")
-    
     message_id = f"help_{message.id}_{message.from_user.id}"
     
     if message_id in processed_messages:
@@ -197,104 +237,65 @@ async def help_command(client, message):
         "📌 Бот автоматически удалит твою ссылку после скачивания\n"
         "⚡ Скачивание работает быстро и бесплатно!"
     )
-    
-    try:
-        await message.reply_text(help_text)
-        logger.info(f"✅ Отправлена помощь пользователю {message.from_user.id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки помощи: {e}")
+    await message.reply_text(help_text)
     
     cleanup_old_processed_messages()
 
-@app.on_message(filters.command("test"))
-async def test_command(client, message):
-    """Тестовая команда для проверки работы бота"""
-    logger.info(f"🧪 Тестовая команда от {message.from_user.id}")
-    
-    try:
-        await message.reply_text("✅ Бот работает корректно! Можете отправлять ссылки.")
-        logger.info(f"✅ Тест пройден для пользователя {message.from_user.id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка тестовой команды: {e}")
-
 @app.on_message(filters.text & filters.private)
-async def handle_text(client, message):
+async def handle_text(_, message):
     """Обработчик текстовых сообщений от пользователей"""
     
-    logger.info(f"📩 Получено сообщение от {message.from_user.id}: {message.text[:50]}...")
-    
-    # Создаем уникальный идентификатор сообщения
     message_id = f"text_{message.id}_{message.from_user.id}"
     
-    # Проверяем, не обрабатывалось ли уже это сообщение
     if message_id in processed_messages:
-        logger.info("🔄 Пропускаем дублирующее сообщение")
         return
         
-    # Пропускаем команды (они обрабатываются отдельно)
     if message.text and message.text.startswith('/'):
-        logger.info("⚙️ Пропускаем команду")
         return
     
     user_id = message.from_user.id
     text = message.text.strip()
     
-    # Извлекаем URL
     url = extract_first_url(text)
-    logger.info(f"🔍 Извлечен URL: {url}")
-    
     if not url or not any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
-        logger.info("❌ URL не найден или не поддерживается")
-        # НЕ удаляем обычные текстовые сообщения, только ссылки
         return
 
-    # Помечаем сообщение как обрабатываемое
     processed_messages.add(message_id)
     
-    # Проверяем, не обрабатывается ли уже запрос от этого пользователя
     if user_id in user_processing and user_processing[user_id].get('processing'):
-        logger.info(f"⏳ Пользователь {user_id} уже имеет активный запрос")
-        try:
-            temp_msg = await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
-            await asyncio.sleep(3)
-            await temp_msg.delete()
-        except Exception as e:
-            logger.error(f"❌ Ошибка уведомления о занятости: {e}")
-        # Удаляем из обработанных, чтобы можно было повторить
+        temp_msg = await message.reply_text("⏳ Ваш предыдущий запрос еще обрабатывается...")
+        await asyncio.sleep(3)
+        await temp_msg.delete()
         processed_messages.discard(message_id)
         return
 
-    # Помечаем пользователя как обрабатываемого
     user_processing[user_id] = {'processing': True}
     
     status = None
     
     try:
         url = normalize_url(url)
-        logger.info(f"🔄 Нормализованный URL: {url}")
-        
         status = await message.reply_text("⏳ Обработка видео...")
-        logger.info(f"📊 Статус отправлен для пользователя {user_id}")
         
         if "youtube" in url or "youtu.be" in url:
-            logger.info("🎥 Обработка YouTube ссылки")
-            # YouTube обработка
+            # YouTube обработка - ИСПРАВЛЕННАЯ
             try:
-                # Пытаемся отправить прямую ссылку
                 await status.edit_text("🔗 Получаю прямую ссылку YouTube...")
                 direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
                 
-                await status.edit_text("📤 Отправляю видео...")
-                await message.reply_video(
-                    direct_url, 
-                    caption="📥 YouTube видео скачано через @azams_bot"
-                )
-                logger.info("✅ YouTube видео отправлено через прямую ссылку")
+                if direct_url:
+                    await status.edit_text("📤 Отправляю видео...")
+                    await message.reply_video(
+                        direct_url, 
+                        caption="📥 YouTube видео скачано через @azams_bot"
+                    )
+                    logger.info("✅ YouTube видео отправлено через прямую ссылку")
+                else:
+                    raise Exception("Не удалось получить прямую ссылку")
                 
             except Exception as e:
-                logger.warning(f"❌ Прямая ссылка YouTube не сработала: {e}, скачиваю файл...")
-                # Если прямая ссылка не работает, скачиваем файл
-                await status.edit_text("📥 Скачиваю видео...")
+                logger.warning(f"Прямая ссылка YouTube не сработала: {e}, скачиваю файл...")
+                await status.edit_text("📥 Скачиваю YouTube видео...")
                 tmp_dir = tempfile.mkdtemp()
                 
                 try:
@@ -312,7 +313,6 @@ async def handle_text(client, message):
                     os.rmdir(tmp_dir)
                     
                 except Exception as download_error:
-                    # Очистка при ошибке
                     if os.path.exists(tmp_dir):
                         for file in os.listdir(tmp_dir):
                             os.remove(os.path.join(tmp_dir, file))
@@ -320,7 +320,6 @@ async def handle_text(client, message):
                     raise download_error
                 
         elif "instagram.com" in url:
-            logger.info("📸 Обработка Instagram ссылки")
             # Instagram обработка
             if not os.path.exists("cookies.txt"):
                 await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
@@ -342,8 +341,8 @@ async def handle_text(client, message):
                     raise Exception("Не удалось получить прямую ссылку")
                 
             except Exception as e:
-                logger.warning(f"❌ Прямая ссылка Instagram не сработала: {e}, скачиваю файл...")
-                await status.edit_text("📥 Скачиваю видео...")
+                logger.warning(f"Прямая ссылка Instagram не сработала: {e}, скачиваю файл...")
+                await status.edit_text("📥 Скачиваю Instagram видео...")
                 tmp_dir = tempfile.mkdtemp()
                 
                 try:
@@ -355,20 +354,18 @@ async def handle_text(client, message):
                     )
                     logger.info("✅ Instagram видео отправлено как файл")
                     
-                    # Очистка временных файлов
                     if os.path.exists(file_path):
                         os.remove(file_path)
                     os.rmdir(tmp_dir)
                     
                 except Exception as download_error:
-                    # Очистка при ошибке
                     if os.path.exists(tmp_dir):
                         for file in os.listdir(tmp_dir):
                             os.remove(os.path.join(tmp_dir, file))
                         os.rmdir(tmp_dir)
                     raise download_error
 
-        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем только сообщение пользователя со ссылкой
+        # Успешное завершение
         await message.delete()
         logger.info(f"✅ Обработка завершена для пользователя {user_id}")
 
@@ -384,18 +381,15 @@ async def handle_text(client, message):
                 pass
                 
     finally:
-        # Удаляем статус сообщение
         if status:
             try:
                 await status.delete()
             except:
                 pass
                 
-        # Снимаем блокировку обработки
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
             
-        # Очищаем старые записи из processed_messages
         cleanup_old_processed_messages()
 
 # ------------------------- ЗАПУСК -------------------------
@@ -416,11 +410,16 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
-    logger.info("🚀 Запуск бота...")
-    logger.info("📝 Бот будет удалять ТОЛЬКО ссылки после скачивания, остальные сообщения остаются")
+    # Запускаем планировщик перезапуска
+    schedule_restart()
+    
+    logger.info("🚀 Запуск бота с исправленным YouTube и автоматическим перезапуском...")
+    logger.info("⏰ Бот будет автоматически перезапускаться каждые 12 часов")
     
     try:
         app.run()
-        logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска бота: {e}")
+        # Ждем немного перед завершением
+        time.sleep(5)
+        os._exit(1)
