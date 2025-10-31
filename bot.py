@@ -12,7 +12,6 @@ from pyrogram.errors import BadRequest, BadMsgNotification
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
 import instaloader
 import aiohttp
-import shutil
 
 API_ID = 26670278
 API_HASH = "e3d77390fd9c22d98bb6bddca86fef1a"
@@ -363,42 +362,6 @@ def cleanup_old_processed_messages():
         processed_messages = set(list(processed_messages)[-500:])
         logger.info("🧹 Очищены старые записи из processed_messages")
 
-def safe_remove_directory(dir_path: str):
-    """Безопасное удаление директории"""
-    try:
-        if os.path.exists(dir_path):
-            shutil.rmtree(dir_path)
-            logger.info(f"✅ Удалена директория: {dir_path}")
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось удалить директорию {dir_path}: {e}")
-
-def validate_and_fix_extension(file_path: str, expected_type: str) -> str:
-    """Проверяет и исправляет расширение файла"""
-    if not os.path.exists(file_path):
-        return file_path
-    
-    # Определяем правильное расширение по содержимому файла
-    import filetype
-    kind = filetype.guess(file_path)
-    
-    if kind is None:
-        return file_path
-    
-    current_ext = os.path.splitext(file_path)[1].lower()
-    correct_ext = f".{kind.extension}"
-    
-    # Если расширение не совпадает, переименовываем файл
-    if current_ext != correct_ext:
-        new_file_path = os.path.splitext(file_path)[0] + correct_ext
-        try:
-            os.rename(file_path, new_file_path)
-            logger.info(f"✅ Исправлено расширение: {current_ext} -> {correct_ext}")
-            return new_file_path
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось исправить расширение: {e}")
-    
-    return file_path
-
 # ------------------------- ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------------
 
 @app.on_message(filters.command("start"))
@@ -511,7 +474,6 @@ async def handle_text(client, message):
     
     status = None
     insta_downloader = InstagramDownloader()
-    tmp_dir = None
     
     try:
         url = normalize_url(url)
@@ -520,13 +482,12 @@ async def handle_text(client, message):
         status = await message.reply_text("⏳ Определяю тип контента...")
         
         if "youtube" in url or "youtu.be" in url:
-            # YouTube обработка
+            # YouTube обработка (оставляем вашу существующую логику)
             await _handle_youtube(client, message, url, status)
             
         elif "instagram.com" in url:
             # Instagram обработка
-            tmp_dir = tempfile.mkdtemp()
-            await _handle_instagram(client, message, url, status, insta_downloader, tmp_dir)
+            await _handle_instagram(client, message, url, status, insta_downloader)
 
         # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем сообщение пользователя
         await message.delete()
@@ -550,10 +511,6 @@ async def handle_text(client, message):
                 await status.delete()
             except:
                 pass
-                
-        # Очищаем временные файлы
-        if tmp_dir and os.path.exists(tmp_dir):
-            safe_remove_directory(tmp_dir)
                 
         # Снимаем блокировку обработки
         if user_id in user_processing:
@@ -588,14 +545,19 @@ async def _handle_youtube(client, message, url, status):
             )
             logger.info("✅ YouTube видео отправлено как файл")
             
-        except Exception as download_error:
-            raise download_error
-        finally:
             # Очистка временных файлов
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            os.rmdir(tmp_dir)
+            
+        except Exception as download_error:
             if os.path.exists(tmp_dir):
-                safe_remove_directory(tmp_dir)
+                for file in os.listdir(tmp_dir):
+                    os.remove(os.path.join(tmp_dir, file))
+                os.rmdir(tmp_dir)
+            raise download_error
 
-async def _handle_instagram(client, message, url, status, downloader, tmp_dir):
+async def _handle_instagram(client, message, url, status, downloader):
     """Обработка Instagram ссылок"""
     if not check_cookies_file():
         await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
@@ -604,6 +566,7 @@ async def _handle_instagram(client, message, url, status, downloader, tmp_dir):
         
     try:
         await status.edit_text("📥 Скачиваю контент из Instagram...")
+        tmp_dir = tempfile.mkdtemp()
         
         # Скачиваем контент
         content_info = await downloader.download_instagram_content(url, tmp_dir)
@@ -611,62 +574,24 @@ async def _handle_instagram(client, message, url, status, downloader, tmp_dir):
         if not content_info.get('files'):
             raise Exception("Не удалось скачать файлы")
         
-        # Проверяем и исправляем расширения файлов
-        validated_files = []
-        for file_path in content_info['files']:
-            if os.path.exists(file_path):
-                # Проверяем и исправляем расширение
-                fixed_path = validate_and_fix_extension(file_path, content_info['type'])
-                validated_files.append(fixed_path)
-            else:
-                logger.warning(f"⚠️ Файл не найден: {file_path}")
-        
-        if not validated_files:
-            raise Exception("Нет валидных файлов для отправки")
-        
-        content_info['files'] = validated_files
-        
         await status.edit_text(f"📤 Отправляю {content_info['type']}...")
         
         # Отправляем в зависимости от типа контента
         if content_info['type'] in ['photo', 'story_photo']:
             # Одиночное фото
             for file_path in content_info['files']:
-                try:
-                    await message.reply_photo(
-                        file_path,
-                        caption=f"📸 Instagram {'история' if 'story' in content_info['type'] else 'фото'} через @azams_bot"
-                    )
-                    logger.info(f"✅ Фото отправлено: {file_path}")
-                except BadRequest as e:
-                    if "PHOTO_EXT_INVALID" in str(e):
-                        logger.warning(f"⚠️ Неправильное расширение фото, исправляем: {file_path}")
-                        # Пробуем отправить как документ
-                        await message.reply_document(
-                            file_path,
-                            caption=f"📸 Instagram {'история' if 'story' in content_info['type'] else 'фото'} через @azams_bot"
-                        )
-                    else:
-                        raise e
+                await message.reply_photo(
+                    file_path,
+                    caption=f"📸 Instagram {'история' if 'story' in content_info['type'] else 'фото'} через @azams_bot"
+                )
             
         elif content_info['type'] in ['video', 'story_video']:
             # Одиночное видео
             for file_path in content_info['files']:
-                try:
-                    await message.reply_video(
-                        file_path,
-                        caption=f"📹 Instagram {'история' if 'story' in content_info['type'] else 'видео'} через @azams_bot"
-                    )
-                    logger.info(f"✅ Видео отправлено: {file_path}")
-                except BadRequest as e:
-                    if "Wrong file identifier" in str(e) or "invalid" in str(e).lower():
-                        logger.warning(f"⚠️ Проблема с видеофайлом, отправляем как документ: {file_path}")
-                        await message.reply_document(
-                            file_path,
-                            caption=f"📹 Instagram {'история' if 'story' in content_info['type'] else 'видео'} через @azams_bot"
-                        )
-                    else:
-                        raise e
+                await message.reply_video(
+                    file_path,
+                    caption=f"📹 Instagram {'история' if 'story' in content_info['type'] else 'видео'} через @azams_bot"
+                )
             
         elif content_info['type'] == 'carousel':
             # Карусель (несколько файлов)
@@ -676,33 +601,30 @@ async def _handle_instagram(client, message, url, status, downloader, tmp_dir):
             # История (неизвестный тип - пробуем все файлы)
             for file_path in content_info['files']:
                 if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    try:
-                        await message.reply_photo(
-                            file_path,
-                            caption="📸 Instagram история через @azams_bot"
-                        )
-                    except BadRequest as e:
-                        if "PHOTO_EXT_INVALID" in str(e):
-                            await message.reply_document(
-                                file_path,
-                                caption="📸 Instagram история через @azams_bot"
-                            )
+                    await message.reply_photo(
+                        file_path,
+                        caption="📸 Instagram история через @azams_bot"
+                    )
                 elif file_path.lower().endswith(('.mp4', '.mov', '.avi')):
-                    try:
-                        await message.reply_video(
-                            file_path,
-                            caption="📹 Instagram история через @azams_bot"
-                        )
-                    except BadRequest as e:
-                        if "Wrong file identifier" in str(e):
-                            await message.reply_document(
-                                file_path,
-                                caption="📹 Instagram история через @azams_bot"
-                            )
+                    await message.reply_video(
+                        file_path,
+                        caption="📹 Instagram история через @azams_bot"
+                    )
         
         logger.info(f"✅ Instagram {content_info['type']} отправлен")
         
+        # Очистка временных файлов
+        for file_path in content_info['files']:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        os.rmdir(tmp_dir)
+        
     except Exception as e:
+        # Очистка при ошибке
+        if 'tmp_dir' in locals() and os.path.exists(tmp_dir):
+            for file in os.listdir(tmp_dir):
+                os.remove(os.path.join(tmp_dir, file))
+            os.rmdir(tmp_dir)
         raise e
 
 async def _send_carousel(client, message, files):
@@ -713,35 +635,20 @@ async def _send_carousel(client, message, files):
         if i >= 10:  # Ограничение Telegram
             break
             
-        if os.path.exists(file_path):
-            try:
-                if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    if i == 0:
-                        media_group.append(InputMediaPhoto(file_path, caption="🖼️ Instagram карусель через @azams_bot"))
-                    else:
-                        media_group.append(InputMediaPhoto(file_path))
-                        
-                elif file_path.lower().endswith(('.mp4', '.mov', '.avi')):
-                    if i == 0:
-                        media_group.append(InputMediaVideo(file_path, caption="🎬 Instagram карусель через @azams_bot"))
-                    else:
-                        media_group.append(InputMediaVideo(file_path))
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось добавить файл в медиагруппу: {file_path}, ошибка: {e}")
+        if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
+            if i == 0:
+                media_group.append(InputMediaPhoto(file_path, caption="🖼️ Instagram карусель через @azams_bot"))
+            else:
+                media_group.append(InputMediaPhoto(file_path))
+                
+        elif file_path.lower().endswith(('.mp4', '.mov', '.avi')):
+            if i == 0:
+                media_group.append(InputMediaVideo(file_path, caption="🎬 Instagram карусель через @azams_bot"))
+            else:
+                media_group.append(InputMediaVideo(file_path))
     
     if media_group:
-        try:
-            await message.reply_media_group(media_group)
-            logger.info(f"✅ Медиагруппа отправлена ({len(media_group)} файлов)")
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки медиагруппы: {e}")
-            # Пробуем отправить файлы по отдельности
-            for file_path in files:
-                if os.path.exists(file_path):
-                    if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        await message.reply_photo(file_path)
-                    elif file_path.lower().endswith(('.mp4', '.mov', '.avi')):
-                        await message.reply_video(file_path)
+        await message.reply_media_group(media_group)
 
 # ------------------------- ЗАПУСК -------------------------
 if __name__ == "__main__":
@@ -760,10 +667,6 @@ if __name__ == "__main__":
         logger.info("✅ Файл cookies.txt найден - Instagram доступен")
     else:
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
-    
-    # Создаем папку для загрузок
-    if not os.path.exists("downloads"):
-        os.makedirs("downloads")
     
     logger.info("🚀 Запуск бота...")
     logger.info("📸 Бот теперь поддерживает фото, карусели и истории Instagram!")
