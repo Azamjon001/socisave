@@ -9,13 +9,16 @@ import time
 import requests
 from pyrogram import Client, filters
 from pyrogram.errors import BadRequest, BadMsgNotification
+from pyrogram.types import InputMediaPhoto, InputMediaVideo
+import instaloader
+import aiohttp
 
 API_ID = 26670278
 API_HASH = "e3d77390fd9c22d98bb6bddca86fef1a"
 BOT_TOKEN = "6788128988:AAEMmCSafiiEqtS5UWQQxfo--W0On7B6Q08"
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 # ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -------------------------
 user_processing = {}  # Храним статус обработки для каждого пользователя
@@ -48,7 +51,263 @@ app = SafeClient(
     sleep_threshold=15
 )
 
-# ------------------------- вспомогательные функции -------------------------
+# ------------------------- Instagram Downloader Class -------------------------
+class InstagramDownloader:
+    def __init__(self):
+        self.ydl_opts_photo = {
+            'outtmpl': 'downloads/%(title).50s.%(ext)s',
+            'format': 'best[ext=jpg]/best[ext=png]/best',
+            'cookiefile': 'cookies.txt',
+            'quiet': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        }
+        
+        self.ydl_opts_video = {
+            'outtmpl': 'downloads/%(title).50s.%(ext)s',
+            'format': 'best[ext=mp4]/best',
+            'cookiefile': 'cookies.txt',
+            'quiet': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        }
+
+    async def download_instagram_content(self, url: str, out_path: str):
+        """Универсальная функция для скачивания любого контента Instagram"""
+        try:
+            # Если это история - используем специальную функцию
+            if '/stories/' in url:
+                return await self._download_story(url, out_path)
+            
+            # Для постов используем yt-dlp
+            return await self._download_with_ytdlp(url, out_path)
+        except Exception as e:
+            logger.warning(f"yt-dlp не сработал: {e}, пробуем instaloader")
+            return await self._download_with_instaloader(url, out_path)
+
+    async def _download_story(self, url: str, out_path: str):
+        """Специальная функция для скачивания историй"""
+        try:
+            # Пробуем через yt-dlp сначала
+            ydl_opts = {
+                'outtmpl': os.path.join(out_path, 'story_%(upload_date)s_%(id)s.%(ext)s'),
+                'cookiefile': 'cookies.txt',
+                'quiet': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+                result = {
+                    'type': 'story',
+                    'files': [],
+                    'title': f"instagram_story_{info.get('id', 'unknown')}",
+                    'webpage_url': url
+                }
+                
+                if info.get('url'):
+                    result['files'].append(info['url'])
+                elif info.get('requested_downloads'):
+                    for download in info['requested_downloads']:
+                        result['files'].append(download['filepath'])
+                
+                # Определяем тип файла
+                if result['files']:
+                    ext = result['files'][0].split('.')[-1].lower()
+                    if ext in ['jpg', 'png', 'jpeg']:
+                        result['type'] = 'story_photo'
+                    elif ext in ['mp4', 'mov', 'avi']:
+                        result['type'] = 'story_video'
+                
+                return result
+                
+        except Exception as e:
+            logger.warning(f"yt-dlp для историй не сработал: {e}, пробуем instaloader")
+            return await self._download_story_with_instaloader(url, out_path)
+
+    async def _download_story_with_instaloader(self, url: str, out_path: str):
+        """Скачивание историй через instaloader"""
+        try:
+            L = instaloader.Instaloader(
+                dirname_pattern=out_path,
+                filename_pattern='{profile}_{date}',
+                download_pictures=True,
+                download_videos=True,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                compress_json=False
+            )
+            
+            # Извлекаем username из URL истории
+            username = self._extract_story_username(url)
+            if not username:
+                raise Exception("Не удалось извлечь username из URL истории")
+            
+            # Скачиваем истории
+            profile = instaloader.Profile.from_username(L.context, username)
+            
+            downloaded_files = []
+            for story in L.get_stories([profile.userid]):
+                for item in story.get_items():
+                    # Скачиваем каждый элемент истории
+                    L.download_storyitem(item, target=os.path.join(out_path, f"story_{username}"))
+                    
+                    # Находим скачанные файлы
+                    for file in os.listdir(out_path):
+                        if file.startswith(f"story_{username}") and not file.endswith('.txt'):
+                            downloaded_files.append(os.path.join(out_path, file))
+                    
+                    # Берем только последнюю историю для простоты
+                    break
+                break
+            
+            if not downloaded_files:
+                raise Exception("Не удалось скачать истории")
+            
+            result = {
+                'type': 'story',
+                'files': downloaded_files,
+                'title': f"instagram_story_{username}",
+                'webpage_url': url
+            }
+            
+            # Определяем тип первого файла
+            if downloaded_files:
+                ext = downloaded_files[0].split('.')[-1].lower()
+                if ext in ['jpg', 'png', 'jpeg']:
+                    result['type'] = 'story_photo'
+                elif ext in ['mp4', 'mov', 'avi']:
+                    result['type'] = 'story_video'
+            
+            return result
+            
+        except Exception as e:
+            raise Exception(f"Instaloader ошибка для историй: {str(e)}")
+
+    def _extract_story_username(self, url: str):
+        """Извлекает username из URL истории"""
+        pattern = r'instagram\.com/stories/([^/?]+)'
+        match = re.search(pattern, url)
+        return match.group(1) if match else None
+
+    async def _download_with_ytdlp(self, url: str, out_path: str):
+        """Скачивание через yt-dlp для постов"""
+        ydl_opts = {
+            'outtmpl': os.path.join(out_path, '%(title).50s.%(ext)s'),
+            'cookiefile': 'cookies.txt',
+            'quiet': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            
+            # Получаем информацию о типе контента
+            result = {
+                'type': 'unknown',
+                'files': [],
+                'title': info.get('title', 'instagram_content'),
+                'webpage_url': info.get('webpage_url', url)
+            }
+            
+            # Определяем тип контента
+            if info.get('_type') == 'playlist':
+                result['type'] = 'carousel'
+                # Для каруселей получаем все файлы
+                for entry in info.get('entries', []):
+                    if entry.get('url'):
+                        result['files'].append(entry['url'])
+                    elif entry.get('requested_downloads'):
+                        for download in entry['requested_downloads']:
+                            result['files'].append(download['filepath'])
+            else:
+                # Одиночный файл
+                if info.get('url'):
+                    result['files'].append(info['url'])
+                elif info.get('requested_downloads'):
+                    for download in info['requested_downloads']:
+                        result['files'].append(download['filepath'])
+                
+                # Определяем тип одиночного файла
+                if info.get('ext') in ['jpg', 'png', 'jpeg']:
+                    result['type'] = 'photo'
+                elif info.get('ext') in ['mp4', 'mov', 'avi']:
+                    result['type'] = 'video'
+            
+            return result
+            
+    async def _download_with_instaloader(self, url: str, out_path: str):
+        """Резервный метод через instaloader для постов"""
+        try:
+            L = instaloader.Instaloader(
+                dirname_pattern=out_path,
+                filename_pattern='{shortcode}',
+                download_pictures=True,
+                download_videos=True,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                compress_json=False
+            )
+            
+            # Извлекаем shortcode из URL
+            shortcode = self._extract_shortcode(url)
+            if not shortcode:
+                raise Exception("Не удалось извлечь shortcode из URL")
+            
+            # Скачиваем пост
+            post = instaloader.Post.from_shortcode(L.context, shortcode)
+            L.download_post(post, target=out_path)
+            
+            # Собираем скачанные файлы
+            downloaded_files = []
+            for file in os.listdir(out_path):
+                if file.startswith(shortcode):
+                    downloaded_files.append(os.path.join(out_path, file))
+            
+            result = {
+                'type': 'carousel' if post.mediacount > 1 else 'photo',
+                'files': downloaded_files,
+                'title': f"instagram_{shortcode}",
+                'webpage_url': url
+            }
+            
+            # Определяем тип по расширению первого файла
+            if downloaded_files:
+                ext = downloaded_files[0].split('.')[-1].lower()
+                if ext in ['mp4', 'mov', 'avi']:
+                    result['type'] = 'video'
+                    
+            return result
+            
+        except Exception as e:
+            raise Exception(f"Instaloader ошибка: {str(e)}")
+
+    def _extract_shortcode(self, url: str):
+        """Извлекает shortcode из URL Instagram"""
+        patterns = [
+            r'instagram\.com/p/([^/?]+)',
+            r'instagram\.com/reel/([^/?]+)',
+            r'instagram\.com/stories/[^/]+/([^/?]+)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return None
+
+# ------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------
 def extract_first_url(text: str) -> str:
     match = re.search(r"(https?://[^\s]+)", text)
     return match.group(1) if match else ""
@@ -79,7 +338,6 @@ def download_youtube_video(url: str, out_path: str) -> str:
         info = ydl.extract_info(url, download=True)
         return ydl.prepare_filename(info)
 
-# ✅ ИСПРАВЛЕНО: Instagram функции с правильным использованием cookies
 def check_cookies_file():
     """Проверяем наличие cookies файла"""
     if not os.path.exists("cookies.txt"):
@@ -88,56 +346,12 @@ def check_cookies_file():
     logger.info("✅ Файл cookies.txt найден")
     return True
 
-def get_instagram_url(url: str) -> str:
-    """Получаем прямую ссылку на Instagram видео"""
-    if not check_cookies_file():
-        raise FileNotFoundError("Файл cookies.txt не найден. Instagram недоступен.")
-    
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "format": "best[ext=mp4]/best",
-        "cookiefile": "cookies.txt",
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info.get("url")
-    except Exception as e:
-        logger.error(f"Ошибка получения Instagram URL: {e}")
-        raise
-
-def download_instagram_video(url: str, out_path: str) -> str:
-    """Скачиваем Instagram видео если прямая ссылка не работает"""
-    if not check_cookies_file():
-        raise FileNotFoundError("Файл cookies.txt не найден.")
-    
-    ydl_opts = {
-        "outtmpl": os.path.join(out_path, "%(title).50s.%(ext)s"),
-        "format": "best[ext=mp4]/best",
-        "cookiefile": "cookies.txt",
-        "quiet": True,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            return ydl.prepare_filename(info)
-    except Exception as e:
-        logger.error(f"Ошибка скачивания Instagram: {e}")
-        raise
-
 async def cleanup_user_message(message, delay: int = 3):
     """Удаляет сообщение пользователя после задержки"""
     try:
         await asyncio.sleep(delay)
         await message.delete()
-        logger.info(f"🗑 Удалено сообщение пользователя {message.from_user.id}")
+        logger.info(f"🗑️ Удалено сообщение пользователя {message.from_user.id}")
     except Exception as e:
         logger.warning(f"Не удалось удалить сообщение: {e}")
 
@@ -145,11 +359,10 @@ def cleanup_old_processed_messages():
     """Очищает старые записи из processed_messages"""
     global processed_messages
     if len(processed_messages) > 1000:
-        # Оставляем только последние 500 записей
         processed_messages = set(list(processed_messages)[-500:])
         logger.info("🧹 Очищены старые записи из processed_messages")
 
-# ------------------------- ИСПРАВЛЕННЫЕ ХЭНДЛЕРЫ -------------------------
+# ------------------------- ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------------
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
@@ -167,7 +380,12 @@ async def start(client, message):
     try:
         welcome_msg = await message.reply_text(
             "Привет! 👋\n\n"
-            "📥 Отправь ссылку на Instagram — я скачаю видео для тебя.\n"
+            "📥 Отправь ссылку на Instagram — я скачаю:\n"
+            "• 📹 Видео и рилсы\n" 
+            "• 📸 Фото\n"
+            "• 🖼️ Карусели (несколько фото/видео)\n"
+            "• 📱 Истории (stories)\n\n"
+            "Также поддерживается YouTube!"
         )
         logger.info(f"✅ Отправлено приветственное сообщение пользователю {message.from_user.id}")
     except Exception as e:
@@ -190,10 +408,12 @@ async def help_command(client, message):
     help_text = (
         "🤖 **Помощь по боту**\n\n"
         "📥 Просто отправь ссылку на:\n"
-        "• Instagram видео/реельс\n" 
+        "• Instagram фото/видео/рилс\n"
+        "• Instagram карусель (несколько фото)\n" 
+        "• Instagram историю (stories)\n"
         "• YouTube видео\n\n"
         "📌 Бот автоматически удалит твою ссылку после скачивания\n"
-        "⚡️ Скачивание работает быстро и бесплатно!"
+        "⚡ Скачивание работает быстро и бесплатно!"
     )
     
     try:
@@ -203,17 +423,6 @@ async def help_command(client, message):
         logger.error(f"❌ Ошибка отправки помощи: {e}")
     
     cleanup_old_processed_messages()
-
-@app.on_message(filters.command("test"))
-async def test_command(client, message):
-    """Тестовая команда для проверки работы бота"""
-    logger.info(f"🧪 Тестовая команда от {message.from_user.id}")
-    
-    try:
-        await message.reply_text("✅ Бот работает корректно! Можете отправлять ссылки.")
-        logger.info(f"✅ Тест пройден для пользователя {message.from_user.id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка тестовой команды: {e}")
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(client, message):
@@ -243,7 +452,6 @@ async def handle_text(client, message):
     
     if not url or not any(d in url for d in ["youtube.com", "youtu.be", "instagram.com"]):
         logger.info("❌ URL не найден или не поддерживается")
-        # НЕ удаляем обычные текстовые сообщения, только ссылки
         return
 
     # Помечаем сообщение как обрабатываемое
@@ -258,7 +466,6 @@ async def handle_text(client, message):
             await temp_msg.delete()
         except Exception as e:
             logger.error(f"❌ Ошибка уведомления о занятости: {e}")
-        # Удаляем из обработанных, чтобы можно было повторить
         processed_messages.discard(message_id)
         return
 
@@ -266,108 +473,23 @@ async def handle_text(client, message):
     user_processing[user_id] = {'processing': True}
     
     status = None
+    insta_downloader = InstagramDownloader()
     
     try:
         url = normalize_url(url)
         logger.info(f"🔄 Нормализованный URL: {url}")
         
-        status = await message.reply_text("⏳ Обработка видео...")
-        logger.info(f"📊 Статус отправлен для пользователя {user_id}")
+        status = await message.reply_text("⏳ Определяю тип контента...")
         
         if "youtube" in url or "youtu.be" in url:
-            logger.info("🎥 Обработка YouTube ссылки")
-            # YouTube обработка
-            try:
-                # Пытаемся отправить прямую ссылку
-                await status.edit_text("🔗 Получаю прямую ссылку YouTube...")
-                direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
-                
-                await status.edit_text("📤 Отправляю видео...")
-                await message.reply_video(
-                    direct_url, 
-                    caption="📥 YouTube видео скачано через @azams_bot"
-                )
-                logger.info("✅ YouTube видео отправлено через прямую ссылку")
-                
-            except Exception as e:
-                logger.warning(f"❌ Прямая ссылка YouTube не сработала: {e}, скачиваю файл...")
-                # Если прямая ссылка не работает, скачиваем файл
-                await status.edit_text("📥 Скачиваю видео...")
-                tmp_dir = tempfile.mkdtemp()
-                
-                try:
-                    file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
-                    await status.edit_text("📤 Отправляю видео...")
-                    await message.reply_video(
-                        file_path, 
-                        caption="📥 YouTube видео скачано через @azams_bot"
-                    )
-                    logger.info("✅ YouTube видео отправлено как файл")
-                    
-                    # Очистка временных файлов
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                    os.rmdir(tmp_dir)
-                    
-                except Exception as download_error:
-                    # Очистка при ошибке
-                    if os.path.exists(tmp_dir):
-                        for file in os.listdir(tmp_dir):
-
-os.remove(os.path.join(tmp_dir, file))
-                        os.rmdir(tmp_dir)
-                    raise download_error
-                
+            # YouTube обработка (оставляем вашу существующую логику)
+            await _handle_youtube(client, message, url, status)
+            
         elif "instagram.com" in url:
-            logger.info("📸 Обработка Instagram ссылки")
             # Instagram обработка
-            if not os.path.exists("cookies.txt"):
-                await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
-                await asyncio.sleep(5)
-                await status.delete()
-                return
-                
-            try:
-                await status.edit_text("🔗 Получаю прямую ссылку Instagram...")
-                direct_url = await asyncio.to_thread(get_instagram_url, url)
-                if direct_url:
-                    await status.edit_text("📤 Отправляю видео...")
-                    await message.reply_video(
-                        direct_url, 
-                        caption="📥 Instagram видео скачано через @azams_bot"
-                    )
-                    logger.info("✅ Instagram видео отправлено через прямую ссылку")
-                else:
-                    raise Exception("Не удалось получить прямую ссылку")
-                
-            except Exception as e:
-                logger.warning(f"❌ Прямая ссылка Instagram не сработала: {e}, скачиваю файл...")
-                await status.edit_text("📥 Скачиваю видео...")
-                tmp_dir = tempfile.mkdtemp()
-                
-                try:
-                    file_path = await asyncio.to_thread(download_instagram_video, url, tmp_dir)
-                    await status.edit_text("📤 Отправляю видео...")
-                    await message.reply_video(
-                        file_path,
-                        caption="📥 Instagram видео скачано через @azams_bot"
-                    )
-                    logger.info("✅ Instagram видео отправлено как файл")
-                    
-                    # Очистка временных файлов
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                    os.rmdir(tmp_dir)
-                    
-                except Exception as download_error:
-                    # Очистка при ошибке
-                    if os.path.exists(tmp_dir):
-                        for file in os.listdir(tmp_dir):
-                            os.remove(os.path.join(tmp_dir, file))
-                        os.rmdir(tmp_dir)
-                    raise download_error
+            await _handle_instagram(client, message, url, status, insta_downloader)
 
-        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем только сообщение пользователя со ссылкой
+        # УСПЕШНОЕ ЗАВЕРШЕНИЕ - удаляем сообщение пользователя
         await message.delete()
         logger.info(f"✅ Обработка завершена для пользователя {user_id}")
 
@@ -394,18 +516,149 @@ os.remove(os.path.join(tmp_dir, file))
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
             
-        # Очищаем старые записи из processed_messages
         cleanup_old_processed_messages()
 
+async def _handle_youtube(client, message, url, status):
+    """Обработка YouTube ссылок"""
+    try:
+        await status.edit_text("🔗 Получаю прямую ссылку YouTube...")
+        direct_url = await asyncio.to_thread(get_youtube_direct_url, url)
+        
+        await status.edit_text("📤 Отправляю видео...")
+        await message.reply_video(
+            direct_url, 
+            caption="📥 YouTube видео скачано через @azams_bot"
+        )
+        logger.info("✅ YouTube видео отправлено через прямую ссылку")
+        
+    except Exception as e:
+        logger.warning(f"❌ Прямая ссылка YouTube не сработала: {e}, скачиваю файл...")
+        await status.edit_text("📥 Скачиваю видео...")
+        tmp_dir = tempfile.mkdtemp()
+        
+        try:
+            file_path = await asyncio.to_thread(download_youtube_video, url, tmp_dir)
+            await status.edit_text("📤 Отправляю видео...")
+            await message.reply_video(
+                file_path, 
+                caption="📥 YouTube видео скачано через @azams_bot"
+            )
+            logger.info("✅ YouTube видео отправлено как файл")
+            
+            # Очистка временных файлов
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            os.rmdir(tmp_dir)
+            
+        except Exception as download_error:
+            if os.path.exists(tmp_dir):
+                for file in os.listdir(tmp_dir):
+                    os.remove(os.path.join(tmp_dir, file))
+                os.rmdir(tmp_dir)
+            raise download_error
+
+async def _handle_instagram(client, message, url, status, downloader):
+    """Обработка Instagram ссылок"""
+    if not check_cookies_file():
+        await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
+        await asyncio.sleep(5)
+        return
+        
+    try:
+        await status.edit_text("📥 Скачиваю контент из Instagram...")
+        tmp_dir = tempfile.mkdtemp()
+        
+        # Скачиваем контент
+        content_info = await downloader.download_instagram_content(url, tmp_dir)
+        
+        if not content_info.get('files'):
+            raise Exception("Не удалось скачать файлы")
+        
+        await status.edit_text(f"📤 Отправляю {content_info['type']}...")
+        
+        # Отправляем в зависимости от типа контента
+        if content_info['type'] in ['photo', 'story_photo']:
+            # Одиночное фото
+            for file_path in content_info['files']:
+                await message.reply_photo(
+                    file_path,
+                    caption=f"📸 Instagram {'история' if 'story' in content_info['type'] else 'фото'} через @azams_bot"
+                )
+            
+        elif content_info['type'] in ['video', 'story_video']:
+            # Одиночное видео
+            for file_path in content_info['files']:
+                await message.reply_video(
+                    file_path,
+                    caption=f"📹 Instagram {'история' if 'story' in content_info['type'] else 'видео'} через @azams_bot"
+                )
+            
+        elif content_info['type'] == 'carousel':
+            # Карусель (несколько файлов)
+            await _send_carousel(client, message, content_info['files'])
+            
+        elif content_info['type'] == 'story':
+            # История (неизвестный тип - пробуем все файлы)
+            for file_path in content_info['files']:
+                if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    await message.reply_photo(
+                        file_path,
+                        caption="📸 Instagram история через @azams_bot"
+                    )
+                elif file_path.lower().endswith(('.mp4', '.mov', '.avi')):
+                    await message.reply_video(
+                        file_path,
+                        caption="📹 Instagram история через @azams_bot"
+                    )
+        
+        logger.info(f"✅ Instagram {content_info['type']} отправлен")
+        
+        # Очистка временных файлов
+        for file_path in content_info['files']:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        os.rmdir(tmp_dir)
+        
+    except Exception as e:
+        # Очистка при ошибке
+        if 'tmp_dir' in locals() and os.path.exists(tmp_dir):
+            for file in os.listdir(tmp_dir):
+                os.remove(os.path.join(tmp_dir, file))
+            os.rmdir(tmp_dir)
+        raise e
+
+async def _send_carousel(client, message, files):
+    """Отправка карусели (нескольких медиафайлов)"""
+    media_group = []
+    
+    for i, file_path in enumerate(files):
+        if i >= 10:  # Ограничение Telegram
+            break
+            
+        if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
+            if i == 0:
+                media_group.append(InputMediaPhoto(file_path, caption="🖼️ Instagram карусель через @azams_bot"))
+            else:
+                media_group.append(InputMediaPhoto(file_path))
+                
+        elif file_path.lower().endswith(('.mp4', '.mov', '.avi')):
+            if i == 0:
+                media_group.append(InputMediaVideo(file_path, caption="🎬 Instagram карусель через @azams_bot"))
+            else:
+                media_group.append(InputMediaVideo(file_path))
+    
+    if media_group:
+        await message.reply_media_group(media_group)
+
 # ------------------------- ЗАПУСК -------------------------
-if name == "main":
+if __name__ == "__main__":
     # Удаляем старые файлы сессии перед запуском
-    old_sessions = ["fast_bot.session", "fast_bot.session-journal"]
+    old_sessions = ["video_bot_new_session_2024.session", "video_bot_new_session_2024.session-journal"]
     for session_file in old_sessions:
         if os.path.exists(session_file):
             try:
                 os.remove(session_file)
-                logger.info(f"🗑 Удален старый файл сессии: {session_file}")
+                logger.info(f"🗑️ Удален старый файл сессии: {session_file}")
             except Exception as e:
                 logger.warning(f"Не удалось удалить {session_file}: {e}")
     
@@ -416,11 +669,10 @@ if name == "main":
         logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
     
     logger.info("🚀 Запуск бота...")
-    logger.info("📝 Бот будет удалять ТОЛЬКО ссылки после скачивания, остальные сообщения остаются")
+    logger.info("📸 Бот теперь поддерживает фото, карусели и истории Instagram!")
     
     try:
         app.run()
         logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска бота: {e}")
-
