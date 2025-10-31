@@ -1,4 +1,3 @@
-SUPREME, [31.10.2025 7:55]
 import os
 import asyncio
 import logging
@@ -111,7 +110,6 @@ def get_instagram_url(url: str) -> str:
         logger.error(f"Ошибка получения Instagram URL: {e}")
         raise
 
-SUPREME, [31.10.2025 7:55]
 def download_instagram_video(url: str, out_path: str) -> str:
     """Скачиваем Instagram видео если прямая ссылка не работает"""
     if not check_cookies_file():
@@ -217,7 +215,6 @@ async def test_command(client, message):
     except Exception as e:
         logger.error(f"❌ Ошибка тестовой команды: {e}")
 
-SUPREME, [31.10.2025 7:55]
 @app.on_message(filters.text & filters.private)
 async def handle_text(client, message):
     """Обработчик текстовых сообщений от пользователей"""
@@ -317,7 +314,6 @@ async def handle_text(client, message):
                     if os.path.exists(tmp_dir):
                         for file in os.listdir(tmp_dir):
 
-SUPREME, [31.10.2025 7:55]
 os.remove(os.path.join(tmp_dir, file))
                         os.rmdir(tmp_dir)
                     raise download_error
@@ -401,7 +397,6 @@ os.remove(os.path.join(tmp_dir, file))
         # Очищаем старые записи из processed_messages
         cleanup_old_processed_messages()
 
-SUPREME, [31.10.2025 7:55]
 # ------------------------- ЗАПУСК -------------------------
 if name == "main":
     # Удаляем старые файлы сессии перед запуском
@@ -428,3 +423,4 @@ if name == "main":
         logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска бота: {e}")
+
