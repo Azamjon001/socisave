@@ -77,14 +77,128 @@ class InstagramDownloader:
     async def download_instagram_content(self, url: str, out_path: str):
         """Универсальная функция для скачивания любого контента Instagram"""
         try:
-            # Сначала пробуем yt-dlp для всего
+            # Если это история - используем специальную функцию
+            if '/stories/' in url:
+                return await self._download_story(url, out_path)
+            
+            # Для постов используем yt-dlp
             return await self._download_with_ytdlp(url, out_path)
         except Exception as e:
             logger.warning(f"yt-dlp не сработал: {e}, пробуем instaloader")
             return await self._download_with_instaloader(url, out_path)
 
+    async def _download_story(self, url: str, out_path: str):
+        """Специальная функция для скачивания историй"""
+        try:
+            # Пробуем через yt-dlp сначала
+            ydl_opts = {
+                'outtmpl': os.path.join(out_path, 'story_%(upload_date)s_%(id)s.%(ext)s'),
+                'cookiefile': 'cookies.txt',
+                'quiet': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+                result = {
+                    'type': 'story',
+                    'files': [],
+                    'title': f"instagram_story_{info.get('id', 'unknown')}",
+                    'webpage_url': url
+                }
+                
+                if info.get('url'):
+                    result['files'].append(info['url'])
+                elif info.get('requested_downloads'):
+                    for download in info['requested_downloads']:
+                        result['files'].append(download['filepath'])
+                
+                # Определяем тип файла
+                if result['files']:
+                    ext = result['files'][0].split('.')[-1].lower()
+                    if ext in ['jpg', 'png', 'jpeg']:
+                        result['type'] = 'story_photo'
+                    elif ext in ['mp4', 'mov', 'avi']:
+                        result['type'] = 'story_video'
+                
+                return result
+                
+        except Exception as e:
+            logger.warning(f"yt-dlp для историй не сработал: {e}, пробуем instaloader")
+            return await self._download_story_with_instaloader(url, out_path)
+
+    async def _download_story_with_instaloader(self, url: str, out_path: str):
+        """Скачивание историй через instaloader"""
+        try:
+            L = instaloader.Instaloader(
+                dirname_pattern=out_path,
+                filename_pattern='{profile}_{date}',
+                download_pictures=True,
+                download_videos=True,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                compress_json=False
+            )
+            
+            # Извлекаем username из URL истории
+            username = self._extract_story_username(url)
+            if not username:
+                raise Exception("Не удалось извлечь username из URL истории")
+            
+            # Скачиваем истории
+            profile = instaloader.Profile.from_username(L.context, username)
+            
+            downloaded_files = []
+            for story in L.get_stories([profile.userid]):
+                for item in story.get_items():
+                    # Скачиваем каждый элемент истории
+                    L.download_storyitem(item, target=os.path.join(out_path, f"story_{username}"))
+                    
+                    # Находим скачанные файлы
+                    for file in os.listdir(out_path):
+                        if file.startswith(f"story_{username}") and not file.endswith('.txt'):
+                            downloaded_files.append(os.path.join(out_path, file))
+                    
+                    # Берем только последнюю историю для простоты
+                    break
+                break
+            
+            if not downloaded_files:
+                raise Exception("Не удалось скачать истории")
+            
+            result = {
+                'type': 'story',
+                'files': downloaded_files,
+                'title': f"instagram_story_{username}",
+                'webpage_url': url
+            }
+            
+            # Определяем тип первого файла
+            if downloaded_files:
+                ext = downloaded_files[0].split('.')[-1].lower()
+                if ext in ['jpg', 'png', 'jpeg']:
+                    result['type'] = 'story_photo'
+                elif ext in ['mp4', 'mov', 'avi']:
+                    result['type'] = 'story_video'
+            
+            return result
+            
+        except Exception as e:
+            raise Exception(f"Instaloader ошибка для историй: {str(e)}")
+
+    def _extract_story_username(self, url: str):
+        """Извлекает username из URL истории"""
+        pattern = r'instagram\.com/stories/([^/?]+)'
+        match = re.search(pattern, url)
+        return match.group(1) if match else None
+
     async def _download_with_ytdlp(self, url: str, out_path: str):
-        """Скачивание через yt-dlp"""
+        """Скачивание через yt-dlp для постов"""
         ydl_opts = {
             'outtmpl': os.path.join(out_path, '%(title).50s.%(ext)s'),
             'cookiefile': 'cookies.txt',
@@ -133,7 +247,7 @@ class InstagramDownloader:
             return result
             
     async def _download_with_instaloader(self, url: str, out_path: str):
-        """Резервный метод через instaloader"""
+        """Резервный метод через instaloader для постов"""
         try:
             L = instaloader.Instaloader(
                 dirname_pattern=out_path,
@@ -463,31 +577,39 @@ async def _handle_instagram(client, message, url, status, downloader):
         await status.edit_text(f"📤 Отправляю {content_info['type']}...")
         
         # Отправляем в зависимости от типа контента
-        if content_info['type'] == 'photo' and len(content_info['files']) == 1:
+        if content_info['type'] in ['photo', 'story_photo']:
             # Одиночное фото
-            await message.reply_photo(
-                content_info['files'][0],
-                caption=f"📸 Instagram фото через @azams_bot"
-            )
+            for file_path in content_info['files']:
+                await message.reply_photo(
+                    file_path,
+                    caption=f"📸 Instagram {'история' if 'story' in content_info['type'] else 'фото'} через @azams_bot"
+                )
             
-        elif content_info['type'] == 'video' and len(content_info['files']) == 1:
+        elif content_info['type'] in ['video', 'story_video']:
             # Одиночное видео
-            await message.reply_video(
-                content_info['files'][0],
-                caption=f"📹 Instagram видео через @azams_bot"
-            )
+            for file_path in content_info['files']:
+                await message.reply_video(
+                    file_path,
+                    caption=f"📹 Instagram {'история' if 'story' in content_info['type'] else 'видео'} через @azams_bot"
+                )
             
-        elif content_info['type'] == 'carousel' and len(content_info['files']) > 1:
+        elif content_info['type'] == 'carousel':
             # Карусель (несколько файлов)
             await _send_carousel(client, message, content_info['files'])
             
-        else:
-            # Неизвестный тип или одиночный файл
+        elif content_info['type'] == 'story':
+            # История (неизвестный тип - пробуем все файлы)
             for file_path in content_info['files']:
                 if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    await message.reply_photo(file_path)
+                    await message.reply_photo(
+                        file_path,
+                        caption="📸 Instagram история через @azams_bot"
+                    )
                 elif file_path.lower().endswith(('.mp4', '.mov', '.avi')):
-                    await message.reply_video(file_path)
+                    await message.reply_video(
+                        file_path,
+                        caption="📹 Instagram история через @azams_bot"
+                    )
         
         logger.info(f"✅ Instagram {content_info['type']} отправлен")
         
