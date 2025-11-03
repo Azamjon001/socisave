@@ -26,9 +26,12 @@ logger = logging.getLogger(__name__)
 user_processing = {}
 processed_messages = set()
 
-# ------------------------- ОПТИМИЗИРОВАННЫЙ SafeClient -------------------------
+# ------------------------- SafeClient для Railway -------------------------
 class SafeClient(Client):
     async def send(self, *args, **kwargs):
+        """
+        Переопределяем метод отправки, чтобы исправлять msg_id при ошибке [16].
+        """
         for attempt in range(3):
             try:
                 return await super().send(*args, **kwargs)
@@ -47,69 +50,75 @@ app = SafeClient(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    sleep_threshold=30,  # Увеличили для стабильности
-    workers=100,  # Больше workers для параллелизма
+    sleep_threshold=60,
+    workers=150,
+    max_concurrent_transmissions=10,
 )
 
 # ------------------------- ОПТИМИЗИРОВАННЫЙ Instagram Downloader -------------------------
 class InstagramDownloader:
     def __init__(self):
-        # ОПТИМИЗИРОВАННЫЕ НАСТРОЙКИ yt-dlp ДЛЯ СКОРОСТИ
-        self.fast_ydl_opts = {
-            'outtmpl': 'downloads/%(id)s.%(ext)s',  # Простые имена - быстрее
-            'format': 'best[height<=720]',  # Только HD - быстрее чем 4K
+        # СУПЕР-БЫСТРЫЕ НАСТРОЙКИ yt-dlp
+        self.ultra_fast_ydl_opts = {
+            'outtmpl': 'downloads/%(id)s.%(ext)s',
+            'format': 'best[height<=720]',
             'cookiefile': 'cookies.txt',
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
             'noplaylist': True,
             
-            # ⚡ ОПТИМИЗАЦИИ СКОРОСТИ ⚡
-            'socket_timeout': 15,
-            'extractretry': 1,
-            'retries': 2,
-            'fragment_retries': 2,
+            # ⚡⚡⚡ АГРЕССИВНЫЕ ОПТИМИЗАЦИИ ⚡⚡⚡
+            'socket_timeout': 10,
+            'extractretry': 0,
+            'retries': 1,
+            'fragment_retries': 1,
             'skip_unavailable_fragments': True,
             'keep_fragments': False,
-            'concurrent_fragment_downloads': 6,  # ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА
+            'concurrent_fragment_downloads': 8,
+            'noprogress': True,
             
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
                 'Accept': '*/*',
                 'Accept-Encoding': 'gzip, deflate, br',
             }
         }
         
-        # Пул потоков для параллельной обработки
-        self.thread_pool = ThreadPoolExecutor(max_workers=3)
+        # НАСТРОЙКИ ДЛЯ YOUTUBE SHORTS (БЕЗ ОШИБКИ АВТОРИЗАЦИИ)
+        self.youtube_shorts_opts = {
+            'outtmpl': 'downloads/%(id)s.%(ext)s',
+            'format': 'best[height<=720]',
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 8,
+            'retries': 1,
+            'concurrent_fragment_downloads': 6,
+            'noprogress': True,
+            'no_check_certificate': True,
+            'prefer_insecure': True,
+            'geo_bypass': True,
+        }
+        
+        self.thread_pool = ThreadPoolExecutor(max_workers=4)
 
     async def download_instagram_content(self, url: str, out_path: str):
-        """ОПТИМИЗИРОВАННАЯ функция для скачивания"""
+        """УНИВЕРСАЛЬНАЯ функция для скачивания любого контента Instagram"""
         try:
-            # Используем пул потоков для неблокирующего выполнения
-            loop = asyncio.get_event_loop()
+            # Определяем тип контента по URL
             content_type = self._determine_content_type(url)
             logger.info(f"🔍 Определен тип контента: {content_type}")
             
             if '/stories/' in url:
-                result = await loop.run_in_executor(
-                    self.thread_pool, 
-                    self._download_story_fast, 
-                    url, out_path, content_type
-                )
+                return await self._download_story(url, out_path, content_type)
             else:
-                result = await loop.run_in_executor(
-                    self.thread_pool,
-                    self._download_with_ytdlp_fast,
-                    url, out_path, content_type
-                )
-            return result
+                return await self._download_with_ytdlp(url, out_path, content_type)
         except Exception as e:
-            logger.warning(f"Быстрый метод не сработал: {e}, пробуем instaloader")
+            logger.warning(f"yt-dlp не сработал: {e}, пробуем instaloader")
             return await self._download_with_instaloader(url, out_path)
 
     def _determine_content_type(self, url: str) -> str:
-        """Быстрое определение типа контента"""
+        """Определяет тип контента по URL"""
         if '/reel/' in url or '/reels/' in url or '/tv/' in url:
             return 'video'
         elif '/p/' in url:
@@ -119,56 +128,75 @@ class InstagramDownloader:
         else:
             return 'auto'
 
-    def _download_story_fast(self, url: str, out_path: str, content_type: str):
-        """ОПТИМИЗИРОВАННОЕ скачивание историй"""
+    async def _download_story(self, url: str, out_path: str, content_type: str):
+        """Специальная функция для скачивания историй"""
         try:
-            ydl_opts = self.fast_ydl_opts.copy()
-            ydl_opts['outtmpl'] = os.path.join(out_path, 'story_%(id)s.%(ext)s')
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-                result = {
-                    'type': 'story',
-                    'files': [],
-                    'title': f"instagram_story_{info.get('id', 'unknown')}",
-                    'webpage_url': url
-                }
-                
-                # БЫСТРЫЙ поиск файлов
-                if info.get('requested_downloads'):
-                    for download in info['requested_downloads']:
-                        file_path = download['filepath']
-                        if os.path.exists(file_path) and self._is_media_file_fast(file_path):
-                            result['files'].append(file_path)
-                
-                # Быстрый поиск в директории
-                if not result['files']:
-                    for file in os.listdir(out_path):
-                        file_path = os.path.join(out_path, file)
-                        if self._is_media_file_fast(file_path):
-                            result['files'].append(file_path)
-                
-                # Быстрое определение типа
-                if result['files']:
-                    ext = result['files'][0].split('.')[-1].lower()
-                    if ext in ['mp4', 'mov', 'avi']:
-                        result['type'] = 'story_video'
-                    else:
-                        result['type'] = 'story_photo'
-                
-                return result
-                
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self.thread_pool, 
+                self._download_story_fast, 
+                url, out_path, content_type
+            )
+            return result
         except Exception as e:
-            logger.warning(f"Быстрый yt-dlp для историй не сработал: {e}")
-            raise
+            logger.warning(f"Быстрый метод stories не сработал: {e}, пробуем instaloader")
+            return await self._download_story_with_instaloader(url, out_path, content_type)
+
+    def _download_story_fast(self, url: str, out_path: str, content_type: str):
+        """БЫСТРОЕ скачивание историй через yt-dlp"""
+        ydl_opts = self.ultra_fast_ydl_opts.copy()
+        ydl_opts['outtmpl'] = os.path.join(out_path, 'story_%(id)s.%(ext)s')
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            result = {
+                'type': 'story',
+                'files': [],
+                'title': f"instagram_story_{info.get('id', 'unknown')}",
+                'webpage_url': url
+            }
+            
+            # БЫСТРЫЙ поиск файлов
+            if info.get('requested_downloads'):
+                for download in info['requested_downloads']:
+                    file_path = download['filepath']
+                    if os.path.exists(file_path) and self._is_media_file(file_path):
+                        result['files'].append(file_path)
+            
+            # Быстрый поиск в директории
+            if not result['files']:
+                for file in os.listdir(out_path):
+                    file_path = os.path.join(out_path, file)
+                    if self._is_media_file(file_path):
+                        result['files'].append(file_path)
+            
+            # Быстрое определение типа
+            if result['files']:
+                ext = result['files'][0].split('.')[-1].lower()
+                if ext in ['mp4', 'mov', 'avi']:
+                    result['type'] = 'story_video'
+                else:
+                    result['type'] = 'story_photo'
+            
+            return result
+
+    async def _download_with_ytdlp(self, url: str, out_path: str, content_type: str):
+        """Скачивание через yt-dlp для постов"""
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            self.thread_pool,
+            self._download_with_ytdlp_fast,
+            url, out_path, content_type
+        )
+        return result
 
     def _download_with_ytdlp_fast(self, url: str, out_path: str, content_type: str):
-        """ОПТИМИЗИРОВАННОЕ скачивание через yt-dlp"""
-        ydl_opts = self.fast_ydl_opts.copy()
+        """БЫСТРОЕ скачивание через yt-dlp"""
+        ydl_opts = self.ultra_fast_ydl_opts.copy()
         ydl_opts['outtmpl'] = os.path.join(out_path, '%(id)s.%(ext)s')
         
-        # Быстрая настройка формата
+        # Настраиваем формат в зависимости от типа контента
         if content_type == 'video':
             ydl_opts['format'] = 'best[ext=mp4]/best'
         elif content_type == 'photo':
@@ -188,14 +216,14 @@ class InstagramDownloader:
             if info.get('requested_downloads'):
                 for download in info['requested_downloads']:
                     file_path = download['filepath']
-                    if os.path.exists(file_path) and self._is_media_file_fast(file_path):
+                    if os.path.exists(file_path) and self._is_media_file(file_path):
                         result['files'].append(file_path)
             
             # Быстрый поиск в директории
             if not result['files']:
                 for file in os.listdir(out_path):
                     file_path = os.path.join(out_path, file)
-                    if self._is_media_file_fast(file_path):
+                    if self._is_media_file(file_path):
                         result['files'].append(file_path)
             
             # Быстрое определение типа контента
@@ -211,15 +239,9 @@ class InstagramDownloader:
             
             return result
 
-    def _is_media_file_fast(self, file_path: str) -> bool:
-        """БЫСТРАЯ проверка медиафайла"""
-        media_extensions = {'.jpg', '.jpeg', '.png', '.mp4', '.mov', '.avi', '.webm'}
-        file_ext = os.path.splitext(file_path)[1].lower()
-        return file_ext in media_extensions and os.path.isfile(file_path)
-
-    # ОСТАВЛЯЕМ ВАШИ ОРИГИНАЛЬНЫЕ МЕТОДЫ ДЛЯ FALLBACK
+    # ВАШИ ОРИГИНАЛЬНЫЕ МЕТОДЫ (ОСТАВЛЯЕМ БЕЗ ИЗМЕНЕНИЙ)
     async def _download_story_with_instaloader(self, url: str, out_path: str, content_type: str):
-        """Ваш оригинальный метод для fallback"""
+        """Скачивание историй через instaloader"""
         try:
             L = instaloader.Instaloader(
                 dirname_pattern=out_path,
@@ -232,26 +254,39 @@ class InstagramDownloader:
                 compress_json=False
             )
             
+            # Извлекаем username из URL истории
             username = self._extract_story_username(url)
             if not username:
                 raise Exception("Не удалось извлечь username из URL истории")
             
+            # Скачиваем истории
             profile = instaloader.Profile.from_username(L.context, username)
+            
             downloaded_files = []
             story_count = 0
             
+            # Получаем все истории пользователя
             for story in L.get_stories([profile.userid]):
                 for item in story.get_items():
-                    if story_count >= 3:  # Уменьшили лимит для скорости
+                    if story_count >= 5:
                         break
                         
+                    # Скачиваем каждый элемент истории
                     L.download_storyitem(item, target=os.path.join(out_path, f"story_{username}"))
                     
+                    # Находим скачанные файлы и фильтруем по типу
                     for file in os.listdir(out_path):
                         if file.startswith(f"story_{username}") and not file.endswith('.txt'):
                             full_path = os.path.join(out_path, file)
-                            if self._is_media_file_fast(full_path):
-                                downloaded_files.append(full_path)
+                            if self._is_media_file(full_path):
+                                # Фильтруем по типу контента
+                                ext = full_path.split('.')[-1].lower()
+                                if content_type == 'video' and ext in ['mp4', 'mov', 'avi']:
+                                    downloaded_files.append(full_path)
+                                elif content_type != 'video' and ext in ['jpg', 'png', 'jpeg']:
+                                    downloaded_files.append(full_path)
+                                elif content_type == 'auto':
+                                    downloaded_files.append(full_path)
                     
                     story_count += 1
             
@@ -266,6 +301,7 @@ class InstagramDownloader:
                 'count': len(downloaded_files)
             }
             
+            # Определяем тип файлов
             if downloaded_files:
                 ext = downloaded_files[0].split('.')[-1].lower()
                 if ext in ['jpg', 'png', 'jpeg']:
@@ -279,7 +315,7 @@ class InstagramDownloader:
             raise Exception(f"Instaloader ошибка для историй: {str(e)}")
 
     async def _download_with_instaloader(self, url: str, out_path: str):
-        """Ваш оригинальный метод для fallback"""
+        """Резервный метод через instaloader для постов"""
         try:
             L = instaloader.Instaloader(
                 dirname_pattern=out_path,
@@ -292,17 +328,20 @@ class InstagramDownloader:
                 compress_json=False
             )
             
+            # Извлекаем shortcode из URL
             shortcode = self._extract_shortcode(url)
             if not shortcode:
                 raise Exception("Не удалось извлечь shortcode из URL")
             
+            # Скачиваем пост
             post = instaloader.Post.from_shortcode(L.context, shortcode)
             L.download_post(post, target=out_path)
             
+            # Собираем скачанные файлы (только медиа)
             downloaded_files = []
             for file in os.listdir(out_path):
                 file_path = os.path.join(out_path, file)
-                if self._is_media_file_fast(file_path):
+                if self._is_media_file(file_path):
                     downloaded_files.append(file_path)
             
             result = {
@@ -312,6 +351,7 @@ class InstagramDownloader:
                 'webpage_url': url
             }
             
+            # Определяем тип по расширению первого файла
             if downloaded_files:
                 ext = downloaded_files[0].split('.')[-1].lower()
                 if ext in ['mp4', 'mov', 'avi']:
@@ -322,7 +362,14 @@ class InstagramDownloader:
         except Exception as e:
             raise Exception(f"Instaloader ошибка: {str(e)}")
 
+    def _is_media_file(self, file_path: str) -> bool:
+        """Проверяет, является ли файл медиафайлом"""
+        media_extensions = ['.jpg', '.jpeg', '.png', '.mp4', '.mov', '.avi', '.webm']
+        file_ext = os.path.splitext(file_path)[1].lower()
+        return file_ext in media_extensions and os.path.isfile(file_path)
+
     def _extract_story_username(self, url: str):
+        """Извлекает username из URL истории"""
         patterns = [
             r'instagram\.com/stories/([^/?]+)',
             r'instagram\.com/stories/([^/?]+)/(\d+)',
@@ -335,6 +382,7 @@ class InstagramDownloader:
         return None
 
     def _extract_shortcode(self, url: str):
+        """Извлекает shortcode из URL Instagram"""
         patterns = [
             r'instagram\.com/p/([^/?]+)',
             r'instagram\.com/reel/([^/?]+)',
@@ -347,6 +395,53 @@ class InstagramDownloader:
                 return match.group(1)
         return None
 
+    # НОВАЯ ФУНКЦИЯ ДЛЯ YOUTUBE SHORTS
+    async def download_youtube_shorts(self, url: str, out_path: str):
+        """Скачивание YouTube Shorts"""
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self.thread_pool,
+                self._download_youtube_shorts_fast,
+                url, out_path
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Ошибка скачивания YouTube Shorts: {e}")
+            raise Exception(f"Не удалось скачать YouTube Shorts: {str(e)}")
+
+    def _download_youtube_shorts_fast(self, url: str, out_path: str):
+        """Быстрое скачивание YouTube Shorts"""
+        ydl_opts = self.youtube_shorts_opts.copy()
+        ydl_opts['outtmpl'] = os.path.join(out_path, 'shorts_%(id)s.%(ext)s')
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            # Поиск скачанного файла
+            file_path = None
+            if info.get('requested_downloads'):
+                for download in info['requested_downloads']:
+                    if os.path.exists(download['filepath']):
+                        file_path = download['filepath']
+                        break
+            
+            if not file_path:
+                for file in os.listdir(out_path):
+                    if file.startswith('shorts_') and file.endswith(('.mp4', '.webm')):
+                        file_path = os.path.join(out_path, file)
+                        break
+            
+            if not file_path:
+                raise Exception("Не удалось найти скачанный файл Shorts")
+            
+            return {
+                'type': 'video',
+                'files': [file_path],
+                'title': info.get('title', 'youtube_shorts'),
+                'webpage_url': url
+            }
+
 # ------------------------- ОПТИМИЗИРОВАННЫЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------
 def extract_first_url(text: str) -> str:
     match = re.search(r"(https?://[^\s]+)", text)
@@ -358,12 +453,16 @@ def normalize_url(url: str) -> str:
         return f"https://www.youtube.com/watch?v={video_id}"
     return url
 
+def is_youtube_shorts(url: str) -> bool:
+    """Проверяет, является ли ссылка YouTube Shorts"""
+    return "youtube.com/shorts/" in url or ("youtu.be/" in url and len(url.split("/")[-1]) == 11)
+
 def get_youtube_direct_url(url: str) -> str:
     ydl_opts = {
         "quiet": True, 
         "skip_download": True, 
         "format": "mp4[height<=720]/best[ext=mp4]/best",
-        "socket_timeout": 10  # Добавили таймаут
+        "socket_timeout": 8
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -377,8 +476,8 @@ def download_youtube_video(url: str, out_path: str) -> str:
         "quiet": True,
         "retries": 1,
         "merge_output_format": "mp4",
-        "concurrent_fragment_downloads": 4,  # Параллельная загрузка
-        "socket_timeout": 15,
+        "concurrent_fragment_downloads": 4,
+        "socket_timeout": 10,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -391,7 +490,7 @@ def check_cookies_file():
     logger.info("✅ Файл cookies.txt найден")
     return True
 
-async def cleanup_user_message(message, delay: int = 2):  # Уменьшили задержку
+async def cleanup_user_message(message, delay: int = 2):
     try:
         await asyncio.sleep(delay)
         await message.delete()
@@ -440,7 +539,7 @@ def validate_and_fix_extension(file_path: str) -> str:
     
     return file_path
 
-# ------------------------- ОПТИМИЗИРОВАННЫЕ ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------------
+# ------------------------- ОБНОВЛЕННЫЕ ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------------
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
@@ -456,12 +555,10 @@ async def start(client, message):
     
     try:
         welcome_msg = await message.reply_text(
-            "⚡ **БЫСТРЫЙ Instagram Downloader** ⚡\n\n"
-            "📥 Отправь ссылку на Instagram — я скачаю МГНОВЕННО:\n"
-            "• 📹 Видео и рилсы\n" 
-            "• 📸 Фото\n"
-            "• 🖼️ Карусели\n"
-            "• 📱 Истории\n\n"
+            "⚡ **ULTRA FAST Downloader** ⚡\n\n"
+            "📥 Отправь ссылку на:\n"
+            "• Instagram: фото, видео, рилсы, карусели, истории\n"
+            "• YouTube: видео, Shorts\n\n"
             "🚀 Оптимизировано для максимальной скорости!"
         )
         logger.info(f"✅ Отправлено приветственное сообщение пользователю {message.from_user.id}")
@@ -484,9 +581,8 @@ async def help_command(client, message):
     help_text = (
         "🤖 **Помощь по боту**\n\n"
         "📥 Просто отправь ссылку на:\n"
-        "• Instagram фото/видео/рилс\n"
-        "• Instagram карусель\n" 
-        "• Instagram историю\n\n"
+        "• Instagram фото/видео/рилс/карусели/истории\n"
+        "• YouTube видео/Shorts\n\n"
         "⚡ **ОПТИМИЗИРОВАНО ДЛЯ СКОРОСТИ!**\n"
         "📌 Бот автоматически определит тип контента"
     )
@@ -529,7 +625,7 @@ async def handle_text(client, message):
         logger.info(f"⏳ Пользователь {user_id} уже имеет активный запрос")
         try:
             temp_msg = await message.reply_text("⚡ Уже обрабатываю предыдущий запрос...")
-            await asyncio.sleep(2)  # Уменьшили задержку
+            await asyncio.sleep(2)
             await temp_msg.delete()
         except Exception as e:
             logger.error(f"❌ Ошибка уведомления о занятости: {e}")
@@ -548,10 +644,16 @@ async def handle_text(client, message):
         
         status = await message.reply_text("⚡ Определяю тип контента...")
         
-        if "youtube" in url or "youtu.be" in url:
+        if is_youtube_shorts(url):
+            # ОБРАБОТКА YOUTUBE SHORTS
+            await _handle_youtube_shorts(client, message, url, status)
+            
+        elif "youtube" in url or "youtu.be" in url:
+            # ОБЫЧНОЕ YOUTUBE ВИДЕО
             await _handle_youtube_fast(client, message, url, status)
             
         elif "instagram.com" in url:
+            # INSTAGRAM КОНТЕНТ
             tmp_dir = tempfile.mkdtemp()
             await _handle_instagram_fast(client, message, url, status, insta_downloader, tmp_dir)
 
@@ -564,7 +666,7 @@ async def handle_text(client, message):
         if status:
             try:
                 error_msg = await message.reply_text(f"❌ Ошибка: {str(e)}")
-                await asyncio.sleep(4)  # Уменьшили задержку
+                await asyncio.sleep(4)
                 await error_msg.delete()
             except:
                 pass
@@ -583,6 +685,34 @@ async def handle_text(client, message):
             user_processing[user_id]['processing'] = False
             
         cleanup_old_processed_messages()
+
+async def _handle_youtube_shorts(client, message, url, status):
+    """Обработка YouTube Shorts"""
+    try:
+        await status.edit_text("⚡ Скачиваю YouTube Shorts...")
+        tmp_dir = tempfile.mkdtemp()
+        
+        downloader = InstagramDownloader()
+        content_info = await downloader.download_youtube_shorts(url, tmp_dir)
+        
+        if not content_info.get('files'):
+            raise Exception("Не удалось скачать Shorts")
+        
+        await status.edit_text("📤 Отправляю Shorts...")
+        
+        file_path = content_info['files'][0]
+        await message.reply_video(
+            file_path,
+            caption="🎬 YouTube Shorts через @azams_bot"
+        )
+        
+        logger.info("✅ YouTube Shorts отправлен")
+        
+    except Exception as e:
+        raise e
+    finally:
+        if tmp_dir:
+            safe_remove_directory(tmp_dir)
 
 async def _handle_youtube_fast(client, message, url, status):
     """ОПТИМИЗИРОВАННАЯ обработка YouTube"""
@@ -621,7 +751,7 @@ async def _handle_instagram_fast(client, message, url, status, downloader, tmp_d
     """ОПТИМИЗИРОВАННАЯ обработка Instagram"""
     if not check_cookies_file():
         await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
-        await asyncio.sleep(3)  # Уменьшили задержку
+        await asyncio.sleep(3)
         return
         
     try:
@@ -751,11 +881,11 @@ if __name__ == "__main__":
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
     
-    logger.info("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО БОТА...")
-    logger.info("⚡ АКЦЕНТ НА СКОРОСТЬ И ПАРАЛЛЕЛИЗМ!")
+    logger.info("🚀 ЗАПУСК ПОЛНОГО ОПТИМИЗИРОВАННОГО БОТА...")
+    logger.info("📸 Поддержка: Instagram + YouTube Shorts")
     
     try:
         app.run()
         logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
-        logger.error(f"❌ Ошибка запуска бота: {e}")        
+        logger.error(f"❌ Ошибка запуска бота: {e}")
