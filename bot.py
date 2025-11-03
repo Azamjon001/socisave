@@ -55,11 +55,11 @@ app = SafeClient(
     max_concurrent_transmissions=10,
 )
 
-# ------------------------- ОПТИМИЗИРОВАННЫЙ Instagram Downloader -------------------------
+# ------------------------- ИСПРАВЛЕННЫЙ Instagram Downloader -------------------------
 class InstagramDownloader:
     def __init__(self):
-        # СУПЕР-БЫСТРЫЕ НАСТРОЙКИ yt-dlp
-        self.ultra_fast_ydl_opts = {
+        # ОПТИМИЗИРОВАННЫЕ НАСТРОЙКИ ДЛЯ INSTAGRAM
+        self.instagram_ydl_opts = {
             'outtmpl': 'downloads/%(id)s.%(ext)s',
             'format': 'best[height<=720]',
             'cookiefile': 'cookies.txt',
@@ -68,42 +68,85 @@ class InstagramDownloader:
             'extract_flat': False,
             'noplaylist': True,
             
-            # ⚡⚡⚡ АГРЕССИВНЫЕ ОПТИМИЗАЦИИ ⚡⚡⚡
-            'socket_timeout': 10,
-            'extractretry': 0,
-            'retries': 1,
-            'fragment_retries': 1,
+            # ⚡ ОПТИМИЗАЦИИ СКОРОСТИ ⚡
+            'socket_timeout': 15,
+            'extractretry': 1,
+            'retries': 2,
+            'fragment_retries': 2,
             'skip_unavailable_fragments': True,
             'keep_fragments': False,
-            'concurrent_fragment_downloads': 8,
-            'noprogress': True,
+            'concurrent_fragment_downloads': 6,
             
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
                 'Accept': '*/*',
                 'Accept-Encoding': 'gzip, deflate, br',
+                'Origin': 'https://www.instagram.com',
+                'Referer': 'https://www.instagram.com/',
             }
         }
         
-        # НАСТРОЙКИ ДЛЯ YOUTUBE SHORTS (БЕЗ ОШИБКИ АВТОРИЗАЦИИ)
+        # ИСПРАВЛЕННЫЕ НАСТРОЙКИ ДЛЯ YOUTUBE SHORTS (ОБХОД 403 ОШИБКИ)
         self.youtube_shorts_opts = {
             'outtmpl': 'downloads/%(id)s.%(ext)s',
             'format': 'best[height<=720]',
             'quiet': True,
             'no_warnings': True,
-            'socket_timeout': 8,
-            'retries': 1,
-            'concurrent_fragment_downloads': 6,
-            'noprogress': True,
+            
+            # НАСТРОЙКИ ДЛЯ ОБХОДА 403 ОШИБКИ
+            'socket_timeout': 15,
+            'retries': 3,
+            'fragment_retries': 3,
+            'skip_unavailable_fragments': True,
+            'concurrent_fragment_downloads': 4,
+            
+            # КЛЮЧЕВЫЕ НАСТРОЙКИ ДЛЯ ОБХОДА BLOCK
             'no_check_certificate': True,
             'prefer_insecure': True,
             'geo_bypass': True,
+            'geo_bypass_country': 'US',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                    'player_skip': ['configs', 'webpage']
+                }
+            },
+            
+            # ПРАВИЛЬНЫЕ ЗАГОЛОВКИ ДЛЯ YOUTUBE
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                'Connection': 'keep-alive',
+                'Referer': 'https://www.youtube.com/',
+            }
         }
         
-        self.thread_pool = ThreadPoolExecutor(max_workers=4)
+        # АЛЬТЕРНАТИВНЫЕ НАСТРОЙКИ ДЛЯ YOUTUBE (ЕСЛИ ОСНОВНЫЕ НЕ РАБОТАЮТ)
+        self.youtube_alternative_opts = {
+            'outtmpl': 'downloads/%(id)s.%(ext)s',
+            'format': 'worst[height<=480]/worst',  # Низкое качество - меньше проблем
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 20,
+            'retries': 2,
+            'no_check_certificate': True,
+            'prefer_insecure': True,
+            'geo_bypass': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Mobile Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.youtube.com/',
+            }
+        }
+        
+        self.thread_pool = ThreadPoolExecutor(max_workers=3)
 
     async def download_instagram_content(self, url: str, out_path: str):
-        """УНИВЕРСАЛЬНАЯ функция для скачивания любого контента Instagram"""
+        """УНИВЕРСАЛЬНАЯ функция для скачивания Instagram контента"""
         try:
             # Определяем тип контента по URL
             content_type = self._determine_content_type(url)
@@ -144,7 +187,7 @@ class InstagramDownloader:
 
     def _download_story_fast(self, url: str, out_path: str, content_type: str):
         """БЫСТРОЕ скачивание историй через yt-dlp"""
-        ydl_opts = self.ultra_fast_ydl_opts.copy()
+        ydl_opts = self.instagram_ydl_opts.copy()
         ydl_opts['outtmpl'] = os.path.join(out_path, 'story_%(id)s.%(ext)s')
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -193,7 +236,7 @@ class InstagramDownloader:
 
     def _download_with_ytdlp_fast(self, url: str, out_path: str, content_type: str):
         """БЫСТРОЕ скачивание через yt-dlp"""
-        ydl_opts = self.ultra_fast_ydl_opts.copy()
+        ydl_opts = self.instagram_ydl_opts.copy()
         ydl_opts['outtmpl'] = os.path.join(out_path, '%(id)s.%(ext)s')
         
         # Настраиваем формат в зависимости от типа контента
@@ -239,7 +282,7 @@ class InstagramDownloader:
             
             return result
 
-    # ВАШИ ОРИГИНАЛЬНЫЕ МЕТОДЫ (ОСТАВЛЯЕМ БЕЗ ИЗМЕНЕНИЙ)
+    # ВАШИ ОРИГИНАЛЬНЫЕ МЕТОДЫ INSTALOADER (ОСТАВЛЯЕМ БЕЗ ИЗМЕНЕНИЙ)
     async def _download_story_with_instaloader(self, url: str, out_path: str, content_type: str):
         """Скачивание историй через instaloader"""
         try:
@@ -395,23 +438,35 @@ class InstagramDownloader:
                 return match.group(1)
         return None
 
-    # НОВАЯ ФУНКЦИЯ ДЛЯ YOUTUBE SHORTS
+    # ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ YOUTUBE SHORTS
     async def download_youtube_shorts(self, url: str, out_path: str):
-        """Скачивание YouTube Shorts"""
+        """Скачивание YouTube Shorts с обработкой ошибки 403"""
         try:
+            # Пробуем основной метод
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 self.thread_pool,
-                self._download_youtube_shorts_fast,
+                self._download_youtube_shorts_main,
                 url, out_path
             )
             return result
         except Exception as e:
-            logger.error(f"Ошибка скачивания YouTube Shorts: {e}")
-            raise Exception(f"Не удалось скачать YouTube Shorts: {str(e)}")
+            logger.warning(f"Основной метод YouTube Shorts не сработал: {e}")
+            # Пробуем альтернативный метод
+            try:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    self.thread_pool,
+                    self._download_youtube_shorts_alternative,
+                    url, out_path
+                )
+                return result
+            except Exception as alt_error:
+                logger.error(f"Альтернативный метод YouTube Shorts не сработал: {alt_error}")
+                raise Exception(f"Не удалось скачать YouTube Shorts. Попробуйте другую ссылку.")
 
-    def _download_youtube_shorts_fast(self, url: str, out_path: str):
-        """Быстрое скачивание YouTube Shorts"""
+    def _download_youtube_shorts_main(self, url: str, out_path: str):
+        """ОСНОВНОЙ МЕТОД для YouTube Shorts"""
         ydl_opts = self.youtube_shorts_opts.copy()
         ydl_opts['outtmpl'] = os.path.join(out_path, 'shorts_%(id)s.%(ext)s')
         
@@ -428,7 +483,7 @@ class InstagramDownloader:
             
             if not file_path:
                 for file in os.listdir(out_path):
-                    if file.startswith('shorts_') and file.endswith(('.mp4', '.webm')):
+                    if file.startswith('shorts_') and file.endswith(('.mp4', '.webm', '.mkv')):
                         file_path = os.path.join(out_path, file)
                         break
             
@@ -442,7 +497,31 @@ class InstagramDownloader:
                 'webpage_url': url
             }
 
-# ------------------------- ОПТИМИЗИРОВАННЫЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------
+    def _download_youtube_shorts_alternative(self, url: str, out_path: str):
+        """АЛЬТЕРНАТИВНЫЙ МЕТОД для YouTube Shorts (если основной не работает)"""
+        ydl_opts = self.youtube_alternative_opts.copy()
+        ydl_opts['outtmpl'] = os.path.join(out_path, 'shorts_alt_%(id)s.%(ext)s')
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            # Поиск скачанного файла
+            for file in os.listdir(out_path):
+                if file.startswith('shorts_alt_') and os.path.isfile(os.path.join(out_path, file)):
+                    file_path = os.path.join(out_path, file)
+                    return {
+                        'type': 'video',
+                        'files': [file_path],
+                        'title': info.get('title', 'youtube_shorts'),
+                        'webpage_url': url
+                    }
+            
+            raise Exception("Файл не найден после скачивания")
+
+# ------------------------- ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ -------------------------
+# [Здесь должен быть весь ваш остальной код: вспомогательные функции, обработчики сообщений, запуск и т.д.]
+# Копируйте сюда все функции из вашего предыдущего кода, начиная с extract_first_url и до конца
+
 def extract_first_url(text: str) -> str:
     match = re.search(r"(https?://[^\s]+)", text)
     return match.group(1) if match else ""
@@ -462,7 +541,7 @@ def get_youtube_direct_url(url: str) -> str:
         "quiet": True, 
         "skip_download": True, 
         "format": "mp4[height<=720]/best[ext=mp4]/best",
-        "socket_timeout": 8
+        "socket_timeout": 10
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -477,7 +556,7 @@ def download_youtube_video(url: str, out_path: str) -> str:
         "retries": 1,
         "merge_output_format": "mp4",
         "concurrent_fragment_downloads": 4,
-        "socket_timeout": 10,
+        "socket_timeout": 15,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -539,7 +618,7 @@ def validate_and_fix_extension(file_path: str) -> str:
     
     return file_path
 
-# ------------------------- ОБНОВЛЕННЫЕ ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------------
+# ------------------------- ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------------
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
@@ -559,7 +638,7 @@ async def start(client, message):
             "📥 Отправь ссылку на:\n"
             "• Instagram: фото, видео, рилсы, карусели, истории\n"
             "• YouTube: видео, Shorts\n\n"
-            "🚀 Оптимизировано для максимальной скорости!"
+            "🚀 Исправлены ошибки скачивания!"
         )
         logger.info(f"✅ Отправлено приветственное сообщение пользователю {message.from_user.id}")
     except Exception as e:
@@ -583,7 +662,7 @@ async def help_command(client, message):
         "📥 Просто отправь ссылку на:\n"
         "• Instagram фото/видео/рилс/карусели/истории\n"
         "• YouTube видео/Shorts\n\n"
-        "⚡ **ОПТИМИЗИРОВАНО ДЛЯ СКОРОСТИ!**\n"
+        "⚡ **ИСПРАВЛЕНЫ ОШИБКИ СКАЧИВАНИЯ!**\n"
         "📌 Бот автоматически определит тип контента"
     )
     
@@ -881,8 +960,8 @@ if __name__ == "__main__":
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
     
-    logger.info("🚀 ЗАПУСК ПОЛНОГО ОПТИМИЗИРОВАННОГО БОТА...")
-    logger.info("📸 Поддержка: Instagram + YouTube Shorts")
+    logger.info("🚀 ЗАПУСК ИСПРАВЛЕННОГО БОТА...")
+    logger.info("🔧 Исправлена ошибка 403 для YouTube Shorts")
     
     try:
         app.run()
