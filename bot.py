@@ -66,7 +66,17 @@ class YouTubeShortsDownloader:
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
             headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
+                'DNT': '1',
+                'Connection': 'keep-alive',
             }
         )
         return self
@@ -76,7 +86,7 @@ class YouTubeShortsDownloader:
             await self.session.close()
 
     async def get_shorts_info(self, url: str):
-        """Получаем информацию о YouTube Shorts"""
+        """Получаем информацию о YouTube Shorts через yt-dlp"""
         try:
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 info = await asyncio.get_event_loop().run_in_executor(
@@ -88,52 +98,77 @@ class YouTubeShortsDownloader:
             return None
 
     async def download_shorts_direct(self, url: str, output_path: str):
-        """Скачивание YouTube Shorts через прямую ссылку"""
+        """Скачивание YouTube Shorts через прямую ссылку с aiohttp"""
         try:
-            # Получаем информацию о видео
+            # Получаем информацию о видео через yt-dlp
             info = await self.get_shorts_info(url)
             if not info:
+                logger.error("Не удалось получить информацию о Shorts")
                 return None
 
             # Получаем прямую ссылку на видео
             video_url = info.get('url')
             if not video_url:
-                # Если прямой ссылки нет, используем yt-dlp для скачивания
-                return await self.download_shorts_ytdlp(url, output_path)
+                logger.error("Не удалось получить прямую ссылку на видео")
+                return None
 
+            logger.info(f"📥 Начинаем скачивание Shorts через aiohttp: {video_url[:100]}...")
+            
             # Скачиваем через aiohttp
             filename = f"shorts_{info['id']}.mp4"
             filepath = os.path.join(output_path, filename)
             
             async with self.session.get(video_url) as response:
                 if response.status == 200:
+                    total_size = 0
                     with open(filepath, 'wb') as f:
                         async for chunk in response.content.iter_chunked(8192):
                             f.write(chunk)
+                            total_size += len(chunk)
                     
                     # Проверяем размер файла
                     file_size = os.path.getsize(filepath)
+                    logger.info(f"✅ Shorts скачан: {file_size} байт")
+                    
                     if file_size > 0:
                         return filepath
                     else:
                         os.remove(filepath)
+                        logger.error("❌ Файл пустой")
                         return None
                 else:
-                    logger.error(f"Ошибка HTTP {response.status} при скачивании")
+                    logger.error(f"❌ Ошибка HTTP {response.status} при скачивании")
                     return None
 
         except Exception as e:
-            logger.error(f"Ошибка прямого скачивания Shorts: {e}")
-            return await self.download_shorts_ytdlp(url, output_path)
+            logger.error(f"❌ Ошибка прямого скачивания Shorts: {e}")
+            return None
 
-    async def download_shorts_ytdlp(self, url: str, output_path: str):
-        """Скачивание YouTube Shorts через yt-dlp (fallback)"""
+    async def download_shorts(self, url: str, output_path: str):
+        """Основной метод скачивания YouTube Shorts - ТОЛЬКО через aiohttp"""
+        # Пробуем скачать через aiohttp
+        result = await self.download_shorts_direct(url, output_path)
+        if result:
+            return result
+        
+        # Если aiohttp не сработал, пробуем через yt-dlp как fallback
+        logger.warning("aiohttp не сработал, пробуем yt-dlp как fallback")
+        return await self.download_shorts_ytdlp_fallback(url, output_path)
+
+    async def download_shorts_ytdlp_fallback(self, url: str, output_path: str):
+        """Fallback метод через yt-dlp (если aiohttp не сработал)"""
         try:
             ydl_opts = {
                 'outtmpl': os.path.join(output_path, 'shorts_%(id)s.%(ext)s'),
                 'format': 'best[height<=720][ext=mp4]/best[ext=mp4]',
                 'quiet': True,
                 'no_warnings': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.youtube.com/',
+                }
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -145,28 +180,22 @@ class YouTubeShortsDownloader:
                 if info:
                     filename = ydl.prepare_filename(info)
                     if os.path.exists(filename):
+                        logger.info(f"✅ Shorts скачан через yt-dlp: {filename}")
                         return filename
                     
                     # Ищем файл в директории
                     for file in os.listdir(output_path):
-                        if file.startswith('shorts_') and file.endswith('.mp4'):
-                            return os.path.join(output_path, file)
+                        if file.startswith('shorts_') and (file.endswith('.mp4') or file.endswith('.webm')):
+                            file_path = os.path.join(output_path, file)
+                            logger.info(f"✅ Найден файл Shorts: {file_path}")
+                            return file_path
                 
+                logger.error("❌ yt-dlp не смог скачать Shorts")
                 return None
                 
         except Exception as e:
-            logger.error(f"Ошибка yt-dlp скачивания Shorts: {e}")
+            logger.error(f"❌ Ошибка yt-dlp скачивания Shorts: {e}")
             return None
-
-    async def download_shorts(self, url: str, output_path: str):
-        """Основной метод скачивания YouTube Shorts"""
-        # Пробуем прямой метод сначала
-        result = await self.download_shorts_direct(url, output_path)
-        if result:
-            return result
-        
-        # Если прямой метод не сработал, используем yt-dlp
-        return await self.download_shorts_ytdlp(url, output_path)
 
 # ------------------------- ОПТИМИЗИРОВАННЫЙ Instagram Downloader -------------------------
 class InstagramDownloader:
@@ -357,7 +386,7 @@ class InstagramDownloader:
             
             if downloaded_files:
                 ext = downloaded_files[0].split('.')[-1].lower()
-                if ext in ['mp4', 'mov', 'avi']:
+                if ext in ['mp4', 'mov', '.avi']:
                     result['type'] = 'video'
                     
             return result
@@ -664,11 +693,11 @@ async def handle_text(client, message):
         cleanup_old_processed_messages()
 
 async def _handle_youtube_shorts_fast(client, message, url, status):
-    """ОПТИМИЗИРОВАННАЯ обработка YouTube Shorts"""
+    """ОПТИМИЗИРОВАННАЯ обработка YouTube Shorts - ОСНОВНОЙ через aiohttp"""
     tmp_dir = tempfile.mkdtemp()
     
     try:
-        await status.edit_text("⚡ Скачиваю YouTube Shorts...")
+        await status.edit_text("⚡ Скачиваю YouTube Shorts (aiohttp)...")
         
         async with YouTubeShortsDownloader() as downloader:
             file_path = await downloader.download_shorts(url, tmp_dir)
@@ -678,6 +707,8 @@ async def _handle_youtube_shorts_fast(client, message, url, status):
                 
                 # Проверяем размер файла
                 file_size = os.path.getsize(file_path)
+                logger.info(f"📊 Размер файла Shorts: {file_size} байт")
+                
                 if file_size > 50 * 1024 * 1024:  # 50MB limit
                     await message.reply_text("❌ Файл слишком большой для отправки")
                     return
@@ -686,7 +717,7 @@ async def _handle_youtube_shorts_fast(client, message, url, status):
                     file_path,
                     caption="🎬 YouTube Shorts через @azams_bot"
                 )
-                logger.info("✅ YouTube Shorts отправлен")
+                logger.info("✅ YouTube Shorts отправлен через aiohttp")
             else:
                 await message.reply_text("❌ Не удалось скачать YouTube Shorts")
                 
@@ -861,7 +892,7 @@ if __name__ == "__main__":
         os.makedirs("downloads")
     
     logger.info("🚀 ЗАПУСК УНИВЕРСАЛЬНОГО ВИДЕО БОТА...")
-    logger.info("📹 Поддержка: YouTube Shorts, YouTube, Instagram")
+    logger.info("📹 Поддержка: YouTube Shorts (aiohttp), YouTube, Instagram")
     logger.info("🧹 Автоочистка URL от лишних параметров")
     
     try:
