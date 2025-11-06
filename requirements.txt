@@ -5,3 +5,4 @@ yt-dlp==2024.04.09  # Самая свежая версия
 requests==2.31.0
 instaloader 
 aiohttp
+filetype 
