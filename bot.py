@@ -7,7 +7,6 @@ import re
 import time
 from pyrogram import Client, filters
 from pyrogram.errors import BadRequest, BadMsgNotification
-from pyrogram.types import InputMediaPhoto, InputMediaVideo
 import instaloader
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -49,168 +48,189 @@ app = SafeClient(
     max_concurrent_transmissions=10,
 )
 
-# ------------------------- УЛУЧШЕННЫЙ Instagram Downloader -------------------------
+# ------------------------- БЫСТРЫЙ Instagram Downloader -------------------------
 class InstagramDownloader:
     def __init__(self):
-        self.instagram_ydl_opts = {
+        # БЫСТРЫЕ настройки для видео
+        self.video_opts = {
             'outtmpl': 'downloads/%(id)s.%(ext)s',
-            'format': 'best',
+            'format': 'best[ext=mp4]/best',
             'cookiefile': 'cookies.txt',
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
             'noplaylist': True,
-            
-            # ⚡ ОПТИМИЗАЦИИ СКОРОСТИ ⚡
-            'socket_timeout': 15,
+            'socket_timeout': 10,
             'extractretry': 1,
-            'retries': 2,
-            'fragment_retries': 2,
+            'retries': 1,
+            'fragment_retries': 1,
             'skip_unavailable_fragments': True,
             'keep_fragments': False,
-            'concurrent_fragment_downloads': 6,
-            
+            'concurrent_fragment_downloads': 8,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
                 'Accept': '*/*',
                 'Accept-Encoding': 'gzip, deflate, br',
-                'Origin': 'https://www.instagram.com',
-                'Referer': 'https://www.instagram.com/',
             }
         }
         
-        self.thread_pool = ThreadPoolExecutor(max_workers=3)
+        # БЫСТРЫЕ настройки для фото
+        self.photo_opts = {
+            'outtmpl': 'downloads/%(id)s.%(ext)s',
+            'format': 'best[ext=jpg]/best[ext=png]/best',
+            'cookiefile': 'cookies.txt',
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'noplaylist': True,
+            'socket_timeout': 10,
+            'extractretry': 1,
+            'retries': 1,
+            'fragment_retries': 1,
+            'skip_unavailable_fragments': True,
+            'keep_fragments': False,
+            'concurrent_fragment_downloads': 8,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
+                'Accept': '*/*',
+                'Accept-Encoding': 'gzip, deflate, br',
+            }
+        }
+        
+        self.thread_pool = ThreadPoolExecutor(max_workers=2)
 
-    async def download_instagram_content(self, url: str, out_path: str):
-        """УНИВЕРСАЛЬНАЯ функция для скачивания ВСЕГО контента из Instagram"""
+    async def download_content(self, url: str, out_path: str):
+        """Определяет тип контента и скачивает ТОЛЬКО его"""
         try:
-            # Используем yt-dlp для получения информации о контенте
-            loop = asyncio.get_event_loop()
-            content_info = await loop.run_in_executor(
-                self.thread_pool,
-                self._get_content_info_with_ytdlp,
-                url
-            )
+            # Сначала определяем тип контента
+            content_type = await self._detect_content_type(url)
+            logger.info(f"🔍 Определен тип контента: {content_type}")
             
-            logger.info(f"🔍 Определен тип контента: {content_info['type']}")
-            
-            # Скачиваем контент
-            result = await loop.run_in_executor(
-                self.thread_pool,
-                self._download_all_content,
-                url, out_path, content_info
-            )
-            
-            return result
-            
+            # Скачиваем ТОЛЬКО нужный тип контента
+            if content_type == 'video':
+                return await self._download_video_only(url, out_path)
+            elif content_type == 'photo':
+                return await self._download_photo_only(url, out_path)
+            else:
+                return await self._download_fallback(url, out_path)
+                
         except Exception as e:
-            logger.warning(f"yt-dlp не сработал: {e}, пробуем instaloader")
-            return await self._download_with_instaloader(url, out_path)
+            logger.error(f"❌ Ошибка скачивания: {e}")
+            raise
 
-    def _get_content_info_with_ytdlp(self, url: str):
-        """Получает информацию о контенте через yt-dlp"""
-        ydl_opts = self.instagram_ydl_opts.copy()
-        ydl_opts['skip_download'] = True
+    async def _detect_content_type(self, url: str) -> str:
+        """Быстро определяет тип контента по URL"""
+        loop = asyncio.get_event_loop()
+        
+        # Анализируем URL для быстрого определения
+        if '/reel/' in url or '/reels/' in url or '/tv/' in url:
+            return 'video'
+        elif '/p/' in url:
+            # Для постов нужно проверить что внутри
+            try:
+                return await loop.run_in_executor(
+                    self.thread_pool,
+                    self._check_post_content_type,
+                    url
+                )
+            except:
+                return 'photo'  # По умолчанию для постов
+        elif '/stories/' in url:
+            return 'video'  # Истории обычно видео
+        else:
+            return 'photo'
+
+    def _check_post_content_type(self, url: str) -> str:
+        """Проверяет тип контента в посте"""
+        ydl_opts = {
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'cookiefile': 'cookies.txt'
+        }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
-            content_type = 'unknown'
-            is_video = False
-            is_photo = False
-            is_carousel = False
-            
-            # Определяем тип контента
-            if info.get('_type') == 'playlist':
-                is_carousel = True
-            elif info.get('entries'):
-                is_carousel = True
-            else:
-                # Проверяем расширение
-                if info.get('ext'):
-                    ext = info['ext'].lower()
-                    if ext in ['mp4', 'mov', 'avi', 'webm']:
-                        is_video = True
-                    elif ext in ['jpg', 'jpeg', 'png']:
-                        is_photo = True
-            
-            # Дополнительные проверки
+            # Проверяем длительность - если есть, то видео
             if info.get('duration') and info['duration'] > 0:
-                is_video = True
-            elif info.get('width') and info.get('height'):
-                # Если есть размеры, но нет длительности - вероятно фото
-                is_photo = True
+                return 'video'
             
-            # Финальное определение типа
-            if is_carousel:
-                content_type = 'carousel'
-            elif is_video:
-                content_type = 'video'
-            elif is_photo:
-                content_type = 'photo'
-            else:
-                content_type = 'mixed'
+            # Проверяем расширение
+            if info.get('ext'):
+                ext = info['ext'].lower()
+                if ext in ['mp4', 'mov', 'avi', 'webm']:
+                    return 'video'
+                elif ext in ['jpg', 'jpeg', 'png']:
+                    return 'photo'
             
-            return {
-                'type': content_type,
-                'info': info,
-                'url': url
-            }
+            return 'photo'
 
-    def _download_all_content(self, url: str, out_path: str, content_info: dict):
-        """Скачивает ВЕСЬ контент независимо от типа"""
-        ydl_opts = self.instagram_ydl_opts.copy()
-        ydl_opts['outtmpl'] = os.path.join(out_path, '%(id)s_%(playlist_index)s.%(ext)s')
+    async def _download_video_only(self, url: str, out_path: str):
+        """Скачивает ТОЛЬКО видео"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.thread_pool,
+            self._download_video_only_sync,
+            url, out_path
+        )
+
+    def _download_video_only_sync(self, url: str, out_path: str):
+        """Синхронное скачивание видео"""
+        opts = self.video_opts.copy()
+        opts['outtmpl'] = os.path.join(out_path, 'video_%(id)s.%(ext)s')
         
-        # Скачиваем все доступные форматы
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             
-            result = {
-                'type': content_info['type'],
-                'files': [],
-                'title': info.get('title', 'instagram_content'),
-                'webpage_url': info.get('webpage_url', url),
-                'original_info': content_info
-            }
-            
-            # Собираем ВСЕ скачанные файлы
-            downloaded_files = []
-            
-            # Ищем в requested_downloads
-            if info.get('requested_downloads'):
-                for download in info['requested_downloads']:
-                    file_path = download['filepath']
-                    if os.path.exists(file_path) and self._is_media_file(file_path):
-                        downloaded_files.append(file_path)
-            
-            # Ищем в директории
-            if not downloaded_files:
-                for file in os.listdir(out_path):
+            # Ищем скачанный видео файл
+            for file in os.listdir(out_path):
+                if file.startswith('video_') and file.lower().endswith(('.mp4', '.mov', '.avi', '.webm')):
                     file_path = os.path.join(out_path, file)
-                    if self._is_media_file(file_path):
-                        downloaded_files.append(file_path)
+                    return {
+                        'type': 'video',
+                        'files': [file_path],
+                        'webpage_url': url
+                    }
             
-            result['files'] = downloaded_files
-            
-            # Уточняем тип на основе скачанных файлов
-            if downloaded_files:
-                video_files = [f for f in downloaded_files if f.lower().endswith(('.mp4', '.mov', '.avi', '.webm'))]
-                photo_files = [f for f in downloaded_files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-                
-                if video_files and photo_files:
-                    result['type'] = 'mixed'
-                elif video_files:
-                    result['type'] = 'video'
-                elif photo_files:
-                    result['type'] = 'photo'
-                
-                result['video_files'] = video_files
-                result['photo_files'] = photo_files
-            
-            return result
+            raise Exception("Видео файл не найден после скачивания")
 
-    async def _download_with_instaloader(self, url: str, out_path: str):
+    async def _download_photo_only(self, url: str, out_path: str):
+        """Скачивает ТОЛЬКО фото"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.thread_pool,
+            self._download_photo_only_sync,
+            url, out_path
+        )
+
+    def _download_photo_only_sync(self, url: str, out_path: str):
+        """Синхронное скачивание фото"""
+        opts = self.photo_opts.copy()
+        opts['outtmpl'] = os.path.join(out_path, 'photo_%(id)s.%(ext)s')
+        
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            # Ищем скачанные фото файлы (максимум 10)
+            photo_files = []
+            for file in os.listdir(out_path):
+                if file.startswith('photo_') and file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    file_path = os.path.join(out_path, file)
+                    photo_files.append(file_path)
+                    if len(photo_files) >= 10:  # Ограничиваем количество
+                        break
+            
+            if not photo_files:
+                raise Exception("Фото файлы не найдены после скачивания")
+            
+            return {
+                'type': 'photo',
+                'files': photo_files,
+                'webpage_url': url
+            }
+
+    async def _download_fallback(self, url: str, out_path: str):
         """Резервный метод через instaloader"""
         try:
             L = instaloader.Instaloader(
@@ -226,40 +246,24 @@ class InstagramDownloader:
             
             shortcode = self._extract_shortcode(url)
             if not shortcode:
-                raise Exception("Не удалось извлечь shortcode из URL")
+                raise Exception("Не удалось извлечь shortcode")
             
             post = instaloader.Post.from_shortcode(L.context, shortcode)
             L.download_post(post, target=out_path)
             
+            # Собираем скачанные файлы
             downloaded_files = []
-            video_files = []
-            photo_files = []
-            
             for file in os.listdir(out_path):
                 file_path = os.path.join(out_path, file)
                 if self._is_media_file(file_path):
                     downloaded_files.append(file_path)
-                    if file_path.lower().endswith(('.mp4', '.mov', '.avi', '.webm')):
-                        video_files.append(file_path)
-                    elif file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        photo_files.append(file_path)
             
-            # Определяем тип
-            if video_files and photo_files:
-                content_type = 'mixed'
-            elif video_files:
-                content_type = 'video'
-            elif photo_files:
-                content_type = 'photo'
-            else:
-                content_type = 'unknown'
+            if not downloaded_files:
+                raise Exception("Не удалось скачать файлы")
             
             return {
-                'type': content_type,
-                'files': downloaded_files,
-                'video_files': video_files,
-                'photo_files': photo_files,
-                'title': f"instagram_{shortcode}",
+                'type': 'mixed',
+                'files': downloaded_files[:10],  # Ограничиваем количество
                 'webpage_url': url
             }
             
@@ -292,231 +296,127 @@ def extract_first_url(text: str) -> str:
     return match.group(1) if match else ""
 
 def check_cookies_file():
-    if not os.path.exists("cookies.txt"):
-        logger.error("❌ Файл cookies.txt не найден!")
-        return False
-    logger.info("✅ Файл cookies.txt найден")
-    return True
+    return os.path.exists("cookies.txt")
 
 def cleanup_old_processed_messages():
     global processed_messages
     if len(processed_messages) > 1000:
         processed_messages = set(list(processed_messages)[-500:])
-        logger.info("🧹 Очищены старые записи из processed_messages")
 
 def safe_remove_directory(dir_path: str):
     try:
         if os.path.exists(dir_path):
             shutil.rmtree(dir_path)
-            logger.info(f"✅ Удалена директория: {dir_path}")
     except Exception as e:
-        logger.warning(f"⚠️ Не удалось удалить директорию {dir_path}: {e}")
+        logger.warning(f"⚠️ Не удалось удалить директорию: {e}")
 
 # ------------------------- ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------------
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    logger.info(f"📩 Получена команда /start от {message.from_user.id}")
-    
-    message_id = f"start_{message.id}_{message.from_user.id}"
-    
-    if message_id in processed_messages:
-        return
-        
-    processed_messages.add(message_id)
-    
-    try:
-        await message.reply_text(
-            "⚡ **ULTRA FAST Instagram Downloader** ⚡\n\n"
-            "📥 Отправь ссылку на Instagram:\n"
-            "• Фото, видео, рилсы\n"
-            "• Карусели, истории\n\n"
-            "🚀 Скачиваю ВЕСЬ контент из поста!"
-        )
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки приветствия: {e}")
-    
-    cleanup_old_processed_messages()
-
-@app.on_message(filters.command(["help", "info"]))
-async def help_command(client, message):
-    logger.info(f"📩 Получена команда help от {message.from_user.id}")
-    
-    message_id = f"help_{message.id}_{message.from_user.id}"
-    
-    if message_id in processed_messages:
-        return
-        
-    processed_messages.add(message_id)
-    
-    help_text = (
-        "🤖 **Помощь по боту**\n\n"
-        "📥 Просто отправь ссылку на:\n"
-        "• Instagram фото/видео/рилс/карусели\n\n"
-        "⚡ **СКАЧИВАЮ ВЕСЬ КОНТЕНТ!**\n"
-        "📌 Если в посте есть и фото и видео - пришлю и то и другое"
+    await message.reply_text(
+        "⚡ **Instagram Downloader** ⚡\n\n"
+        "📥 Отправь ссылку на Instagram\n"
+        "• Видео, фото, рилсы\n"
+        "• Быстро и без лишних сообщений"
     )
-    
-    try:
-        await message.reply_text(help_text)
-        logger.info(f"✅ Отправлена помощь пользователю {message.from_user.id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки помощи: {e}")
-    
-    cleanup_old_processed_messages()
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(client, message):
-    logger.info(f"📩 Получено сообщение от {message.from_user.id}: {message.text[:50]}...")
-    
-    message_id = f"text_{message.id}_{message.from_user.id}"
-    
-    if message_id in processed_messages:
-        logger.info("🔄 Пропускаем дублирующее сообщение")
-        return
-        
-    if message.text and message.text.startswith('/'):
-        return
-    
     user_id = message.from_user.id
     text = message.text.strip()
     
-    url = extract_first_url(text)
-    logger.info(f"🔍 Извлечен URL: {url}")
+    # Пропускаем команды
+    if text.startswith('/'):
+        return
     
-    # ТОЛЬКО INSTAGRAM
+    url = extract_first_url(text)
     if not url or "instagram.com" not in url:
-        logger.info("❌ URL не найден или не поддерживается (только Instagram)")
-        try:
-            temp_msg = await message.reply_text("❌ Поддерживаются только ссылки Instagram")
-            await asyncio.sleep(3)
-            await temp_msg.delete()
-        except:
-            pass
         return
 
+    message_id = f"text_{message.id}_{user_id}"
+    if message_id in processed_messages:
+        return
     processed_messages.add(message_id)
     
+    # Проверяем что пользователь не занят
     if user_id in user_processing and user_processing[user_id].get('processing'):
-        logger.info(f"⏳ Пользователь {user_id} уже имеет активный запрос")
-        try:
-            temp_msg = await message.reply_text("⚡ Уже обрабатываю предыдущий запрос...")
-            await asyncio.sleep(2)
-            await temp_msg.delete()
-        except Exception as e:
-            logger.error(f"❌ Ошибка уведомления о занятости: {e}")
-        processed_messages.discard(message_id)
         return
 
     user_processing[user_id] = {'processing': True}
-    
     tmp_dir = None
     
     try:
-        logger.info(f"🔄 Обработка Instagram URL: {url}")
-        
-        # Сразу начинаем скачивание без лишних сообщений
+        # Создаем временную директорию
         tmp_dir = tempfile.mkdtemp()
         downloader = InstagramDownloader()
         
+        # Проверяем cookies
         if not check_cookies_file():
-            raise Exception("Файл cookies.txt не найден")
+            return
         
-        # Скачиваем ВЕСЬ контент
-        content_info = await downloader.download_instagram_content(url, tmp_dir)
+        # Скачиваем контент
+        content_info = await downloader.download_content(url, tmp_dir)
         
         if not content_info.get('files'):
-            raise Exception("Не удалось скачать файлы")
+            return
         
-        logger.info(f"✅ Скачано файлов: {len(content_info['files'])}")
-        logger.info(f"📊 Тип контента: {content_info['type']}")
-        logger.info(f"🎥 Видео: {len(content_info.get('video_files', []))}")
-        logger.info(f"🖼️ Фото: {len(content_info.get('photo_files', []))}")
+        # Отправляем контент БЕЗ лишних сообщений
+        await send_content_silent(client, message, content_info)
         
-        # Отправляем ВЕСЬ контент
-        await send_all_content(client, message, content_info)
-        
-        logger.info(f"✅ Контент отправлен пользователю {user_id}")
-
     except Exception as e:
-        logger.error(f"❌ Ошибка обработки для пользователя {user_id}: {e}")
-        try:
-            error_msg = await message.reply_text(f"❌ Ошибка: {str(e)}")
-            await asyncio.sleep(4)
-            await error_msg.delete()
-        except:
-            pass
-                
+        logger.error(f"❌ Ошибка: {e}")
     finally:
-        if tmp_dir and os.path.exists(tmp_dir):
+        # Очистка
+        if tmp_dir:
             safe_remove_directory(tmp_dir)
-                
         if user_id in user_processing:
             user_processing[user_id]['processing'] = False
-            
         cleanup_old_processed_messages()
 
-async def send_all_content(client, message, content_info):
-    """Отправляет ВЕСЬ скачанный контент"""
+async def send_content_silent(client, message, content_info):
+    """Отправляет контент БЕЗ лишних сообщений"""
     files = content_info.get('files', [])
-    video_files = content_info.get('video_files', [])
-    photo_files = content_info.get('photo_files', [])
+    content_type = content_info.get('type', 'unknown')
     
-    logger.info(f"📤 Отправка: {len(video_files)} видео, {len(photo_files)} фото")
+    if not files:
+        return
     
-    sent_count = 0
+    # Отправляем в зависимости от типа контента
+    if content_type == 'video':
+        # Отправляем первое видео
+        video_path = files[0]
+        if os.path.exists(video_path):
+            await message.reply_video(video_path)
+            
+    elif content_type == 'photo':
+        # Отправляем все фото (до 10) как медиагруппу
+        photo_files = files[:10]
+        if len(photo_files) == 1:
+            # Одно фото - отправляем отдельно
+            await message.reply_photo(photo_files[0])
+        else:
+            # Несколько фото - отправляем группой
+            from pyrogram.types import InputMediaPhoto
+            media_group = []
+            for i, photo_path in enumerate(photo_files):
+                if os.path.exists(photo_path):
+                    media_item = InputMediaPhoto(photo_path)
+                    media_group.append(media_item)
+            
+            if media_group:
+                await message.reply_media_group(media_group)
     
-    # Сначала отправляем видео
-    for video_path in video_files[:5]:  # Ограничиваем количество
-        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-            try:
-                await message.reply_video(
-                    video_path,
-                    caption=""
-                )
-                sent_count += 1
-                await asyncio.sleep(1)  # Задержка между отправками
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось отправить видео {video_path}: {e}")
-    
-    # Затем отправляем фото
-    for photo_path in photo_files[:10]:  # Ограничиваем количество
-        if os.path.exists(photo_path) and os.path.getsize(photo_path) > 0:
-            try:
-                await message.reply_photo(
-                    photo_path,
-                    caption=""
-                )
-                sent_count += 1
-                await asyncio.sleep(0.5)  # Меньшая задержка для фото
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось отправить фото {photo_path}: {e}")
-    
-    # Если ничего не отправилось, пробуем отправить как есть
-    if sent_count == 0 and files:
+    else:
+        # Смешанный контент - отправляем первое что найдем
         for file_path in files[:3]:
             if os.path.exists(file_path):
-                try:
-                    if file_path.lower().endswith(('.mp4', '.mov', '.avi', '.webm')):
-                        await message.reply_video(file_path)
-                    else:
-                        await message.reply_photo(file_path)
-                    sent_count += 1
-                    await asyncio.sleep(1)
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось отправить файл {file_path}: {e}")
-    
-    # Финальное сообщение с результатом
-    if sent_count > 0:
-        result_text = f"✅ Скачано и отправлено: {sent_count} файлов"
-        if video_files:
-            result_text += f"\n🎥 Видео: {len(video_files)}"
-        if photo_files:
-            result_text += f"\n🖼️ Фото: {len(photo_files)}"
-        
-        await message.reply_text(result_text)
-    else:
-        await message.reply_text("❌ Не удалось отправить скачанные файлы")
+                if file_path.lower().endswith(('.mp4', '.mov', '.avi', '.webm')):
+                    await message.reply_video(file_path)
+                    break
+                elif file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    await message.reply_photo(file_path)
+                    break
 
 # ------------------------- ЗАПУСК -------------------------
 if __name__ == "__main__":
@@ -526,25 +426,20 @@ if __name__ == "__main__":
         if os.path.exists(session_file):
             try:
                 os.remove(session_file)
-                logger.info(f"🗑️ Удален старый файл сессии: {session_file}")
-            except Exception as e:
-                logger.warning(f"Не удалось удалить {session_file}: {e}")
+            except:
+                pass
     
     # Проверка cookies
-    if os.path.exists("cookies.txt"):
-        logger.info("✅ Файл cookies.txt найден - Instagram доступен")
-    else:
-        logger.warning("⚠️ Файл cookies.txt не найден - Instagram недоступен")
+    if not os.path.exists("cookies.txt"):
+        logger.warning("⚠️ Файл cookies.txt не найден")
     
     # Создание директорий
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
     
-    logger.info("🚀 ЗАПУСК УЛУЧШЕННОГО БОТА...")
-    logger.info("🔧 Бот скачивает ВЕСЬ контент из Instagram постов")
+    logger.info("🚀 ЗАПУСК БЫСТРОГО БОТА...")
     
     try:
         app.run()
-        logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
-        logger.error(f"❌ Ошибка запуска бота: {e}")
+        logger.error(f"❌ Ошибка запуска: {e}")
