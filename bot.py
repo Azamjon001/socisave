@@ -347,14 +347,14 @@ async def start(client, message):
     
     try:
         welcome_msg = await message.reply_text(
-            "Привет 👋\n\n
+           """Привет 👋\n\n
             Пришлите мне ссылку\n
             на видео или фото из Instagram,\n"
             и я скачаю его для вас 🤝. \n\n
             Hi 👋\n\n
             Send me a link\n
             to a video or photo from Instagram,\n
-            and I’ll download it for you 🤝" 
+            and I’ll download it for you 🤝"""
 
         )
         logger.info(f"✅ Отправлено приветственное сообщение пользователю {message.from_user.id}")
@@ -616,3 +616,4 @@ if __name__ == "__main__":
         logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска бота: {e}")
+
