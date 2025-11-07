@@ -9,19 +9,15 @@ import time
 import requests
 from pyrogram import Client, filters
 from pyrogram.errors import BadRequest, BadMsgNotification
-from pyrogram.types import InputMediaPhoto, InputMediaVideo, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import InputMediaPhoto, InputMediaVideo
 import instaloader
 import aiohttp
 import shutil
 from concurrent.futures import ThreadPoolExecutor
-from pydub import AudioSegment
 
 API_ID = 26670278
 API_HASH = "e3d77390fd9c22d98bb6bddca86fef1a"
 BOT_TOKEN = "6788128988:AAEMmCSafiiEqtS5UWQQxfo--W0On7B6Q08"
-
-# Настройки AudD API
-AUDD_API_TOKEN = "YOUR_AUDD_API_TOKEN"  # Замени на свой токен от audd.io
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,141 +25,6 @@ logger = logging.getLogger(__name__)
 # ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -------------------------
 user_processing = {}
 processed_messages = set()
-
-# ------------------------- КЛАСС ДЛЯ РАСПОЗНАВАНИЯ МУЗЫКИ ЧЕРЕЗ AUDD -------------------------
-class MusicRecognizer:
-    def __init__(self, api_token):
-        self.api_token = api_token
-    
-    def extract_audio_from_video(self, video_path, output_audio_path=None):
-        """Извлекает аудио из видео файла"""
-        try:
-            if output_audio_path is None:
-                output_audio_path = video_path.replace('.mp4', '_audio.mp3')
-            
-            # Используем pydub для извлечения аудио
-            audio = AudioSegment.from_file(video_path)
-            
-            # Обрезаем аудио до 30 секунд для экономии API запросов
-            audio_duration = len(audio)
-            if audio_duration > 30000:  # Если больше 30 секунд
-                audio = audio[:30000]  # Берем первые 30 секунд
-                logger.info("✂️ Аудио обрезано до 30 секунд")
-            
-            audio.export(output_audio_path, format="mp3", bitrate="128k")
-            
-            logger.info(f"✅ Аудио извлечено: {output_audio_path}")
-            return output_audio_path
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка извлечения аудио: {e}")
-            raise Exception(f"Не удалось извлечь аудио из видео: {str(e)}")
-    
-    def recognize_music(self, audio_path):
-        """Распознает музыку через AudD API"""
-        try:
-            with open(audio_path, 'rb') as audio_file:
-                files = {
-                    'file': audio_file
-                }
-                data = {
-                    'api_token': self.api_token,
-                    'return': 'spotify,apple_music,deezer'
-                }
-                
-                # Отправляем запрос к AudD API
-                response = requests.post(
-                    "https://api.audd.io/",
-                    files=files,
-                    data=data,
-                    timeout=30
-                )
-                
-                if response.status_code != 200:
-                    raise Exception(f"API вернул статус {response.status_code}")
-                
-                result = response.json()
-                return self._parse_audd_result(result)
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка распознавания музыки: {e}")
-            return None
-    
-    def _parse_audd_result(self, result):
-        """Парсит результат от AudD"""
-        try:
-            if result['status'] == 'success' and result['result']:
-                track_info = result['result']
-                
-                # Извлекаем информацию о треке
-                parsed_info = {
-                    'title': track_info.get('title', 'Неизвестно'),
-                    'artist': track_info.get('artist', 'Неизвестный артист'),
-                    'album': track_info.get('album', 'Неизвестный альбом'),
-                    'release_date': track_info.get('release_date', 'Неизвестно'),
-                    'label': track_info.get('label', 'Неизвестно'),
-                    'confidence': track_info.get('score', 0) * 100
-                }
-                
-                # Добавляем ссылки на музыкальные платформы
-                platforms = {}
-                
-                # Spotify
-                if 'spotify' in track_info:
-                    spotify_data = track_info['spotify']
-                    if 'external_urls' in spotify_data and 'spotify' in spotify_data['external_urls']:
-                        platforms['spotify'] = spotify_data['external_urls']['spotify']
-                
-                # Apple Music
-                if 'apple_music' in track_info:
-                    apple_data = track_info['apple_music']
-                    if 'url' in apple_data:
-                        platforms['apple_music'] = apple_data['url']
-                
-                # Deezer
-                if 'deezer' in track_info:
-                    deezer_data = track_info['deezer']
-                    if 'link' in deezer_data:
-                        platforms['deezer'] = deezer_data['link']
-                
-                parsed_info['platforms'] = platforms
-                return parsed_info
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка парсинга результата AudD: {e}")
-            return None
-    
-    def get_music_platform_links(self, track_info):
-        """Генерирует ссылки на музыкальные платформы"""
-        title = track_info['title']
-        artist = track_info['artist']
-        
-        search_query = f"{artist} {title}".replace(' ', '+')
-        
-        platforms = {
-            'youtube': f"https://www.youtube.com/results?search_query={search_query}",
-            'youtube_music': f"https://music.youtube.com/search?q={search_query}",
-            'spotify': f"https://open.spotify.com/search/{search_query}",
-            'apple_music': f"https://music.apple.com/search?term={search_query}",
-            'deezer': f"https://www.deezer.com/search/{search_query}",
-            'soundcloud': f"https://soundcloud.com/search?q={search_query}"
-        }
-        
-        # Добавляем прямые ссылки если есть из API
-        if 'platforms' in track_info:
-            if 'spotify' in track_info['platforms']:
-                platforms['spotify_direct'] = track_info['platforms']['spotify']
-            if 'apple_music' in track_info['platforms']:
-                platforms['apple_music_direct'] = track_info['platforms']['apple_music']
-            if 'deezer' in track_info['platforms']:
-                platforms['deezer_direct'] = track_info['platforms']['deezer']
-        
-        return platforms
-
-# Инициализируем распознаватель музыки
-music_recognizer = MusicRecognizer(AUDD_API_TOKEN)
 
 # ------------------------- ОПТИМИЗИРОВАННЫЙ SafeClient -------------------------
 class SafeClient(Client):
@@ -488,7 +349,6 @@ async def start(client, message):
             "• 📸 Фото\n"
             "• 🖼️ Карусели\n"
             "• 📱 Истории\n\n"
-            "🎵 **НОВАЯ ФУНКЦИЯ:** Распознавание музыки в видео!\n"
             "🚀 Оптимизировано для максимальной скорости!"
         )
         logger.info(f"✅ Отправлено приветственное сообщение пользователю {message.from_user.id}")
@@ -496,23 +356,6 @@ async def start(client, message):
         logger.error(f"❌ Ошибка отправки приветствия: {e}")
     
     cleanup_old_processed_messages()
-
-@app.on_message(filters.command(["shazam", "music", "recognize"]))
-async def shazam_command(client, message):
-    """Команда для ручного запуска распознавания музыки"""
-    logger.info(f"🎵 Получена команда Shazam от {message.from_user.id}")
-    
-    if message.reply_to_message and message.reply_to_message.video:
-        await handle_shazam_request(message.reply_to_message, manual=True)
-    else:
-        await message.reply_text(
-            "🎵 **Распознавание музыки**\n\n"
-            "Чтобы распознать музыку:\n"
-            "1. Отправь видео с музыкой\n"
-            "2. Или ответь командой /shazam на видео\n\n"
-            "Или просто отправь ссылку на Instagram видео - "
-            "я автоматически предложу распознать музыку!"
-        )
 
 @app.on_message(filters.text & filters.private)
 async def handle_text(client, message):
@@ -597,7 +440,7 @@ async def handle_text(client, message):
         cleanup_old_processed_messages()
 
 async def _handle_instagram_fast(client, message, url, status, downloader, tmp_dir):
-    """ОПТИМИЗИРОВАННАЯ обработка Instagram с функцией Shazam"""
+    """ОПТИМИЗИРОВАННАЯ обработка Instagram"""
     if not check_cookies_file():
         await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
         await asyncio.sleep(3)
@@ -625,25 +468,18 @@ async def _handle_instagram_fast(client, message, url, status, downloader, tmp_d
         
         await status.edit_text(f"📤 Отправляю {content_info['type']}...")
         
-        # Отправляем контент и добавляем кнопку Shazam для видео
-        await send_content_with_shazam(client, message, content_info)
+        # Отправляем контент
+        await send_content(client, message, content_info)
         
         logger.info(f"✅ Instagram {content_info['type']} отправлен ({len(validated_files)} файлов)")
         
     except Exception as e:
         raise e
 
-async def send_content_with_shazam(client, message, content_info):
-    """Отправка контента с кнопкой Shazam для видео"""
+async def send_content(client, message, content_info):
+    """Отправка контента"""
     files = content_info['files']
     content_type = content_info['type']
-    
-    # Создаем клавиатуру с кнопкой Shazam для видео
-    keyboard = None
-    if content_type in ['video', 'story_video']:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎵 Распознать музыку", callback_data=f"shazam_{message.id}")]
-        ])
     
     if content_type in ['photo', 'story_photo']:
         tasks = []
@@ -651,8 +487,7 @@ async def send_content_with_shazam(client, message, content_info):
             if os.path.exists(file_path):
                 task = message.reply_photo(
                     file_path,
-                    caption=f"📸 Instagram {'история' if 'story' in content_type else 'фото'} через @azams_bot",
-                    reply_markup=keyboard
+                    caption=f"📸 Instagram {'история' if 'story' in content_type else 'фото'} через @azams_bot"
                 )
                 tasks.append(task)
         
@@ -665,22 +500,13 @@ async def send_content_with_shazam(client, message, content_info):
             if os.path.exists(file_path):
                 task = message.reply_video(
                     file_path,
-                    caption=f"📹 Instagram {'история' if 'story' in content_type else 'видео'} через @azams_bot\n\n🎵 Нажми кнопку ниже чтобы распознать музыку!",
-                    reply_markup=keyboard,
+                    caption=f"📹 Instagram {'история' if 'story' in content_type else 'видео'} через @azams_bot",
                     supports_streaming=True
                 )
                 tasks.append(task)
         
         if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            # Сохраняем информацию о видео для последующего распознавания
-            for result in results:
-                if hasattr(result, 'id'):
-                    user_processing[message.from_user.id] = {
-                        'video_files': files,
-                        'processing': False
-                    }
-            return results
+            return await asyncio.gather(*tasks, return_exceptions=True)
             
     elif content_type == 'carousel':
         return await _send_carousel_fast(client, message, files)
@@ -726,140 +552,14 @@ async def _send_carousel_fast(client, message, files):
             if tasks:
                 return await asyncio.gather(*tasks, return_exceptions=True)
 
-@app.on_callback_query(filters.regex(r"^shazam_"))
-async def handle_shazam_callback(client, callback_query):
-    """Обработка нажатия на кнопку Shazam"""
-    user_id = callback_query.from_user.id
-    message_id = callback_query.message.id
-    
-    logger.info(f"🎵 Нажата кнопка Shazam пользователем {user_id}")
-    
-    await callback_query.answer("🔍 Распознаю музыку...")
-    
-    # Ищем видео файлы пользователя
-    if user_id not in user_processing or 'video_files' not in user_processing[user_id]:
-        await callback_query.message.reply_text("❌ Не удалось найти видео для распознавания. Попробуйте отправить видео заново.")
-        return
-    
-    video_files = user_processing[user_id]['video_files']
-    
-    if not video_files:
-        await callback_query.message.reply_text("❌ Видео файлы не найдены.")
-        return
-    
-    # Используем первое видео для распознавания
-    video_path = video_files[0]
-    
-    if not os.path.exists(video_path):
-        await callback_query.message.reply_text("❌ Видео файл не найден на сервере.")
-        return
-    
-    await handle_shazam_request(callback_query.message, video_path)
-
-async def handle_shazam_request(message, video_path=None, manual=False):
-    """Обработка запроса на распознавание музыки"""
-    status_msg = await message.reply_text("🎵 Извлекаю аудио из видео...")
-    
-    try:
-        # Создаем временную директорию для аудио
-        audio_tmp_dir = tempfile.mkdtemp()
-        audio_path = os.path.join(audio_tmp_dir, "extracted_audio.mp3")
-        
-        # Извлекаем аудио
-        await status_msg.edit_text("🔊 Извлекаю аудио дорожку...")
-        extracted_audio_path = music_recognizer.extract_audio_from_video(video_path, audio_path)
-        
-        if not os.path.exists(extracted_audio_path):
-            raise Exception("Не удалось извлечь аудио из видео")
-        
-        # Распознаем музыку
-        await status_msg.edit_text("🔍 Отправляю аудио на распознавание...")
-        music_info = music_recognizer.recognize_music(extracted_audio_path)
-        
-        if not music_info:
-            await status_msg.edit_text("❌ Не удалось распознать музыку в этом видео.\n\nВозможные причины:\n• Слишком короткий аудио фрагмент\n• Фоновая музыка слишком тихая\n• Трек не найден в базе данных")
-            return
-        
-        # Получаем ссылки на платформы
-        platform_links = music_recognizer.get_music_platform_links(music_info)
-        
-        # Формируем сообщение с результатом
-        result_text = (
-            f"🎵 **Музыка распознана!** 🎵\n\n"
-            f"**Трек:** {music_info['title']}\n"
-            f"**Артист:** {music_info['artist']}\n"
-            f"**Альбом:** {music_info['album']}\n"
-            f"**Точность:** {music_info['confidence']:.1f}%\n\n"
-            f"**Слушать на:**"
-        )
-        
-        # Создаем кнопки для музыкальных платформ
-        buttons = []
-        row = []
-        
-        platforms_to_show = {
-            'YouTube': platform_links.get('youtube'),
-            'YouTube Music': platform_links.get('youtube_music'),
-            'Spotify': platform_links.get('spotify_direct') or platform_links.get('spotify'),
-            'Apple Music': platform_links.get('apple_music_direct') or platform_links.get('apple_music'),
-            'Deezer': platform_links.get('deezer_direct') or platform_links.get('deezer'),
-            'SoundCloud': platform_links.get('soundcloud')
-        }
-        
-        for platform_name, platform_url in platforms_to_show.items():
-            if platform_url:
-                row.append(InlineKeyboardButton(platform_name, url=platform_url))
-                if len(row) == 2:  # По 2 кнопки в ряду
-                    buttons.append(row)
-                    row = []
-        
-        if row:  # Добавляем оставшиеся кнопки
-            buttons.append(row)
-        
-        # Добавляем кнопку для повторного распознавания
-        buttons.append([InlineKeyboardButton("🔄 Распознать еще раз", callback_data="shazam_retry")])
-        
-        keyboard = InlineKeyboardMarkup(buttons)
-        
-        await status_msg.edit_text(result_text, reply_markup=keyboard)
-        logger.info(f"✅ Музыка распознана: {music_info['artist']} - {music_info['title']}")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка распознавания музыки: {e}")
-        await status_msg.edit_text(f"❌ Ошибка распознавания музыки: {str(e)}")
-    
-    finally:
-        # Очистка временных файлов
-        if 'audio_tmp_dir' in locals() and os.path.exists(audio_tmp_dir):
-            safe_remove_directory(audio_tmp_dir)
-
-@app.on_callback_query(filters.regex(r"^shazam_retry$"))
-async def handle_shazam_retry(client, callback_query):
-    """Обработка повторного распознавания"""
-    await callback_query.answer("🔄 Запускаю повторное распознавание...")
-    await handle_shazam_request(callback_query.message)
-
 # ------------------------- ЗАПУСК -------------------------
 if __name__ == "__main__":
     # Проверяем наличие необходимых библиотек
-    try:
-        import pydub
-        logger.info("✅ pydub установлен")
-    except ImportError:
-        logger.error("❌ pydub не установлен. Установите: pip install pydub")
-    
     try:
         import filetype
         logger.info("✅ filetype установлен")
     except ImportError:
         logger.warning("⚠️ filetype не установлен. Установите: pip install filetype")
-    
-    # Проверяем настройки AudD
-    if AUDD_API_TOKEN == "YOUR_AUDD_API_TOKEN":
-        logger.warning("⚠️ AudD API не настроен! Функция распознавания музыки недоступна.")
-        logger.info("ℹ️ Получите токен на https://audd.io/ и замените в коде")
-    else:
-        logger.info("✅ AudD API настроен - функция распознавания музыки доступна!")
     
     # Очистка старых сессий
     old_sessions = ["video_bot_new_session_2024.session", "video_bot_new_session_2024.session-journal"]
@@ -879,8 +579,7 @@ if __name__ == "__main__":
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
     
-    logger.info("🚀 ЗАПУСК БОТА С ФУНКЦИЕЙ SHAZAM...")
-    logger.info("🎵 РАСПОЗНАВАНИЕ МУЗЫКИ АКТИВИРОВАНО!")
+    logger.info("🚀 ЗАПУСК БОТА ДЛЯ СКАЧИВАНИЯ INSTAGRAM...")
     
     try:
         app.run()
