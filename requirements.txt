@@ -7,4 +7,5 @@ instaloader
 aiohttp
 filetype 
 ffmpeg
-pydub filetype
+pydub
+
