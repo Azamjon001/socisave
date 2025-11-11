@@ -56,7 +56,7 @@ class InstagramDownloader:
     def __init__(self):
         self.fast_ydl_opts = {
             'outtmpl': 'downloads/%(id)s.%(ext)s',
-            'format': 'bestvideo+bestaudio/best[height<=1080]/best',  # ⚠️ ИСПРАВЛЕНО: приоритет видео
+            'format': 'bestvideo+bestaudio/best[height<=1080]/best',
             'cookiefile': 'cookies.txt',
             'quiet': True,
             'no_warnings': True,
@@ -78,11 +78,13 @@ class InstagramDownloader:
         self.thread_pool = ThreadPoolExecutor(max_workers=3)
 
     async def download_instagram_content(self, url: str, out_path: str):
-        """ОПТИМИЗИРОВАННАЯ функция для скачивания"""
+        """ОПТИМИЗИРОВАННАЯ функция для скачивания только нужного типа контента"""
         try:
             loop = asyncio.get_event_loop()
-            content_type = self._determine_content_type(url)
-            logger.info(f"🔍 Определен тип контента: {content_type}")
+            
+            # Сначала определяем реальный тип контента
+            content_type = await self._determine_real_content_type(url)
+            logger.info(f"🔍 Определен реальный тип контента: {content_type}")
             
             if '/stories/' in url:
                 result = await loop.run_in_executor(
@@ -97,48 +99,110 @@ class InstagramDownloader:
                     url, out_path, content_type
                 )
             
-            # ⚠️ ИСПРАВЛЕНИЕ: Перепроверяем реальный тип скачанных файлов
-            result = self._recheck_content_type(result)
+            # Фильтруем файлы по типу контента
+            result = self._filter_files_by_content_type(result)
             return result
             
         except Exception as e:
             logger.warning(f"Быстрый метод не сработал: {e}, пробуем instaloader")
             return await self._download_with_instaloader(url, out_path)
 
-    def _determine_content_type(self, url: str) -> str:
-        """УЛУЧШЕННОЕ определение типа контента"""
+    async def _determine_real_content_type(self, url: str) -> str:
+        """ОПРЕДЕЛЕНИЕ РЕАЛЬНОГО ТИПА КОНТЕНТА БЕЗ СКАЧИВАНИЯ"""
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # Используем yt-dlp для получения информации без скачивания
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'cookiefile': 'cookies.txt',
+            }
+            
+            def get_info():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            
+            info = await loop.run_in_executor(self.thread_pool, get_info)
+            
+            # Анализируем информацию для определения типа
+            if info.get('_type') == 'playlist':
+                entries = info.get('entries', [])
+                if entries:
+                    first_entry = entries[0]
+                    if first_entry.get('url'):
+                        # Рекурсивно проверяем первый элемент
+                        return await self._determine_real_content_type(first_entry['url'])
+                    elif first_entry.get('formats'):
+                        return self._analyze_formats(first_entry.get('formats', []))
+            
+            # Анализируем форматы
+            if info.get('formats'):
+                return self._analyze_formats(info.get('formats', []))
+            
+            # Резервное определение по URL
+            return self._determine_content_type_by_url(url)
+            
+        except Exception as e:
+            logger.warning(f"Не удалось определить тип контента: {e}, используем резервный метод")
+            return self._determine_content_type_by_url(url)
+
+    def _analyze_formats(self, formats: list) -> str:
+        """АНАЛИЗ ФОРМАТОВ ДЛЯ ОПРЕДЕЛЕНИЯ ТИПА КОНТЕНТА"""
+        has_video = any(f.get('vcodec') != 'none' for f in formats)
+        has_audio = any(f.get('acodec') != 'none' for f in formats)
+        
+        # Если есть видео-кодек, считаем что это видео
+        if has_video:
+            return 'video'
+        # Если есть только аудио и изображения - это фото
+        elif has_audio and not has_video:
+            return 'photo'
+        else:
+            return 'photo'
+
+    def _determine_content_type_by_url(self, url: str) -> str:
+        """Резервное определение типа по URL"""
         if any(x in url for x in ['/reel/', '/reels/', '/tv/', '/video/']):
             return 'video'
         elif '/stories/' in url:
             return 'story'
         elif '/p/' in url:
-            return 'post'  # ⚠️ ИСПРАВЛЕНО: посты могут содержать видео
+            return 'post'
         else:
-            return 'video'  # ⚠️ ИСПРАВЛЕНО: по умолчанию считаем видео
+            return 'video'
 
-    def _recheck_content_type(self, result: dict) -> dict:
-        """ПЕРЕПРОВЕРКА типа контента на основе скачанных файлов"""
+    def _filter_files_by_content_type(self, result: dict) -> dict:
+        """ФИЛЬТРАЦИЯ ФАЙЛОВ ПО ТИПУ КОНТЕНТА"""
         if not result.get('files'):
             return result
             
+        content_type = result.get('type', 'unknown')
         video_files = [f for f in result['files'] if self._is_video_file(f)]
         photo_files = [f for f in result['files'] if self._is_photo_file(f)]
         
-        logger.info(f"📊 Перепроверка: {len(video_files)} видео, {len(photo_files)} фото")
+        logger.info(f"📊 До фильтрации: {len(video_files)} видео, {len(photo_files)} фото")
         
-        # ⚠️ ИСПРАВЛЕНИЕ: Логика определения типа
-        if video_files and not photo_files:
-            result['type'] = 'video'
-        elif photo_files and not video_files:
-            result['type'] = 'photo'
-        elif video_files and photo_files:
-            result['type'] = 'carousel'
-        elif video_files:
-            result['type'] = 'video'  # ⚠️ Приоритет видео если есть
-        elif photo_files:
-            result['type'] = 'photo'
-            
-        logger.info(f"🔍 Окончательный тип: {result['type']}")
+        # ⚠️ ВАЖНО: Фильтруем файлы в зависимости от типа контента
+        if content_type in ['video', 'story_video']:
+            # Для видео оставляем ТОЛЬКО видео файлы
+            result['files'] = video_files
+            if not result['files']:
+                logger.warning("⚠️ Нет видео файлов после фильтрации!")
+                
+        elif content_type in ['photo', 'story_photo']:
+            # Для фото оставляем ТОЛЬКО фото файлы
+            result['files'] = photo_files
+            if not result['files']:
+                logger.warning("⚠️ Нет фото файлов после фильтрации!")
+                
+        elif content_type == 'carousel':
+            # Для карусели оставляем все файлы (и фото и видео)
+            # Но можно добавить дополнительную логику если нужно
+            pass
+        
+        logger.info(f"📊 После фильтрации: {len(result['files'])} файлов")
         return result
 
     def _download_story_fast(self, url: str, out_path: str, content_type: str):
@@ -146,6 +210,12 @@ class InstagramDownloader:
         try:
             ydl_opts = self.fast_ydl_opts.copy()
             ydl_opts['outtmpl'] = os.path.join(out_path, 'story_%(id)s.%(ext)s')
+            
+            # Настраиваем формат в зависимости от типа контента
+            if content_type == 'video':
+                ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best'
+            else:
+                ydl_opts['format'] = 'best[ext=jpg]/best[ext=png]/best'
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -157,6 +227,7 @@ class InstagramDownloader:
                     'webpage_url': url
                 }
                 
+                # Собираем скачанные файлы
                 if info.get('requested_downloads'):
                     for download in info['requested_downloads']:
                         file_path = download['filepath']
@@ -169,7 +240,7 @@ class InstagramDownloader:
                         if self._is_media_file_fast(file_path):
                             result['files'].append(file_path)
                 
-                # ⚠️ ИСПРАВЛЕНИЕ: Улучшенное определение типа для историй
+                # Определяем окончательный тип
                 if result['files']:
                     video_count = sum(1 for f in result['files'] if self._is_video_file(f))
                     if video_count > 0:
@@ -184,17 +255,22 @@ class InstagramDownloader:
             raise
 
     def _download_with_ytdlp_fast(self, url: str, out_path: str, content_type: str):
-        """ИСПРАВЛЕННОЕ скачивание через yt-dlp"""
+        """ИСПРАВЛЕННОЕ скачивание через yt-dlp с правильными форматами"""
         ydl_opts = self.fast_ydl_opts.copy()
         ydl_opts['outtmpl'] = os.path.join(out_path, '%(id)s.%(ext)s')
         
-        # ⚠️ ИСПРАВЛЕНИЕ: Улучшенные форматы для разных типов контента
-        if content_type in ['video', 'post']:  # ⚠️ Посты тоже могут содержать видео
+        # ⚠️ ВАЖНО: Настраиваем формат в зависимости от типа контента
+        if content_type == 'video':
             ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best'
+            ydl_opts['writethumbnail'] = False  # ⚠️ Не скачивать обложки
         elif content_type == 'photo':
             ydl_opts['format'] = 'best[ext=jpg]/best[ext=png]/best'
+            ydl_opts['writethumbnail'] = False  # ⚠️ Не скачивать обложки
+        else:  # post, carousel
+            # Для постов и каруселей скачиваем все
+            ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best/best[ext=jpg]/best[ext=png]'
         
-        logger.info(f"🎯 Используем формат: {ydl_opts['format']}")
+        logger.info(f"🎯 Используем формат для {content_type}: {ydl_opts['format']}")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -204,27 +280,29 @@ class InstagramDownloader:
                 'files': [],
                 'title': info.get('title', 'instagram_content'),
                 'webpage_url': info.get('webpage_url', url),
-                'original_info': info  # ⚠️ ДОБАВЛЕНО: для отладки
             }
             
-            # Собираем скачанные файлы
+            # Собираем ТОЛЬКО основные скачанные файлы (не обложки)
             if info.get('requested_downloads'):
                 for download in info['requested_downloads']:
                     file_path = download['filepath']
                     if os.path.exists(file_path) and self._is_media_file_fast(file_path):
-                        result['files'].append(file_path)
+                        # Пропускаем файлы обложек
+                        if not self._is_thumbnail_file(file_path):
+                            result['files'].append(file_path)
             
+            # Если не нашли через requested_downloads, ищем в директории
             if not result['files']:
                 for file in os.listdir(out_path):
                     file_path = os.path.join(out_path, file)
-                    if self._is_media_file_fast(file_path):
+                    if self._is_media_file_fast(file_path) and not self._is_thumbnail_file(file_path):
                         result['files'].append(file_path)
             
-            # ⚠️ ИСПРАВЛЕНИЕ: Улучшенное определение типа
+            # Определяем окончательный тип на основе скачанных файлов
             video_files = [f for f in result['files'] if self._is_video_file(f)]
             photo_files = [f for f in result['files'] if self._is_photo_file(f)]
             
-            logger.info(f"📁 Найдено файлов: {len(result['files'])} (видео: {len(video_files)}, фото: {len(photo_files)})")
+            logger.info(f"📁 Скачано файлов: {len(result['files'])} (видео: {len(video_files)}, фото: {len(photo_files)})")
             
             if info.get('_type') == 'playlist' or len(result['files']) > 1:
                 result['type'] = 'carousel'
@@ -243,6 +321,16 @@ class InstagramDownloader:
                             result['type'] = 'video'
             
             return result
+
+    def _is_thumbnail_file(self, file_path: str) -> bool:
+        """Проверяет, является ли файл обложкой/миниатюрой"""
+        filename = os.path.basename(file_path).lower()
+        # Паттерны для файлов обложек
+        thumbnail_patterns = [
+            'thumbnail', 'thumb', 'cover', 'poster', 
+            'miniature', 'miniatura', '_thumb', '-thumb'
+        ]
+        return any(pattern in filename for pattern in thumbnail_patterns)
 
     def _is_media_file_fast(self, file_path: str) -> bool:
         """БЫСТРАЯ проверка медиафайла"""
@@ -306,7 +394,7 @@ class InstagramDownloader:
             downloaded_files = []
             for file in os.listdir(out_path):
                 file_path = os.path.join(out_path, file)
-                if self._is_media_file_fast(file_path):
+                if self._is_media_file_fast(file_path) and not self._is_thumbnail_file(file_path):
                     downloaded_files.append(file_path)
             
             result = {
@@ -316,7 +404,7 @@ class InstagramDownloader:
                 'webpage_url': url
             }
             
-            # ⚠️ ИСПРАВЛЕНИЕ: Улучшенное определение типа
+            # Определяем тип на основе скачанных файлов
             video_files = [f for f in downloaded_files if self._is_video_file(f)]
             if video_files:
                 if len(video_files) == 1 and len(downloaded_files) == 1:
@@ -425,7 +513,11 @@ async def start(client, message):
     
     try:
         welcome_msg = await message.reply_text(
-            "📥 Отправь ссылку из Instagram — я скачаю его:\n"
+            "📥 Отправь ссылку из Instagram — я скачаю контент:\n"
+            "• Видео - только видео\n" 
+            "• Фото - только фото\n"
+            "• Карусель - все медиафайлы\n"
+            "⚡ Автоматически определяет тип контента!"
         )
         logger.info(f"✅ Отправлено приветственное сообщение пользователю {message.from_user.id}")
     except Exception as e:
@@ -523,7 +615,19 @@ async def _handle_instagram_fast(client, message, url, status, downloader, tmp_d
         return
         
     try:
-        await status.edit_text("⚡ Скачиваю контент...")
+        await status.edit_text("⚡ Определяю тип контента...")
+        
+        # Определяем тип контента перед скачиванием
+        content_type = await downloader._determine_real_content_type(url)
+        type_messages = {
+            'video': '🎥 Видео',
+            'photo': '🖼️ Фото', 
+            'story_video': '📹 Видео-история',
+            'story_photo': '📸 Фото-история',
+            'carousel': '🔄 Карусель'
+        }
+        
+        await status.edit_text(f"⚡ Скачиваю {type_messages.get(content_type, 'контент')}...")
         
         content_info = await downloader.download_instagram_content(url, tmp_dir)
         
@@ -542,7 +646,7 @@ async def _handle_instagram_fast(client, message, url, status, downloader, tmp_d
         
         content_info['files'] = validated_files
         
-        await status.edit_text(f"📤 Отправляю {content_info['type']}...")
+        await status.edit_text(f"📤 Отправляю {type_messages.get(content_info['type'], 'контент')}...")
         
         # Отправляем контент
         await send_content(client, message, content_info)
@@ -556,6 +660,12 @@ async def send_content(client, message, content_info):
     """Отправка контента"""
     files = content_info['files']
     content_type = content_info['type']
+    
+    if not files:
+        await message.reply_text("❌ Не удалось скачать контент")
+        return
+    
+    logger.info(f"📤 Отправка {content_type}: {len(files)} файлов")
     
     if content_type in ['photo', 'story_photo']:
         tasks = []
@@ -616,7 +726,7 @@ async def _send_carousel_fast(client, message, files):
             return await message.reply_media_group(media_group)
         except Exception as e:
             logger.error(f"❌ Ошибка отправки медиагруппы: {e}")
-            # Fallback
+            # Fallback - отправляем по одному
             tasks = []
             for file_path in files[:5]:
                 if os.path.exists(file_path):
@@ -662,4 +772,3 @@ if __name__ == "__main__":
         logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска бота: {e}")
-
