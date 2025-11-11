@@ -615,7 +615,7 @@ async def handle_text(client, message):
                 file_path = validate_and_fix_extension(files[0])
                 await message.reply_photo(
                     photo=file_path,
-                    caption=f"📸 Instagram Photo\n🔗 {url}"
+                    caption=f"📸 Instagram Photo @azams_bot"
                 )
                 
             elif content_type in ['video', 'story_video'] and len(files) == 1:
@@ -623,7 +623,7 @@ async def handle_text(client, message):
                 file_path = validate_and_fix_extension(files[0])
                 await message.reply_video(
                     video=file_path,
-                    caption=f"🎥 Instagram Video\n🔗 {url}",
+                    caption=f"🎥 Instagram Video @azams_bot",
                     supports_streaming=True
                 )
                 
@@ -698,3 +698,4 @@ if __name__ == "__main__":
     
     app.run()
     logger.info("👋 Бот остановлен")
+
