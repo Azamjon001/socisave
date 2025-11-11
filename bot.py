@@ -51,12 +51,12 @@ app = SafeClient(
     workers=100,
 )
 
-# ------------------------- ОПТИМИЗИРОВАННЫЙ Instagram Downloader -------------------------
+# ------------------------- ИСПРАВЛЕННЫЙ Instagram Downloader -------------------------
 class InstagramDownloader:
     def __init__(self):
         self.fast_ydl_opts = {
             'outtmpl': 'downloads/%(id)s.%(ext)s',
-            'format': 'best[height<=720]',
+            'format': 'bestvideo+bestaudio/best[height<=1080]/best',  # ⚠️ ИСПРАВЛЕНО: приоритет видео
             'cookiefile': 'cookies.txt',
             'quiet': True,
             'no_warnings': True,
@@ -96,21 +96,50 @@ class InstagramDownloader:
                     self._download_with_ytdlp_fast,
                     url, out_path, content_type
                 )
+            
+            # ⚠️ ИСПРАВЛЕНИЕ: Перепроверяем реальный тип скачанных файлов
+            result = self._recheck_content_type(result)
             return result
+            
         except Exception as e:
             logger.warning(f"Быстрый метод не сработал: {e}, пробуем instaloader")
             return await self._download_with_instaloader(url, out_path)
 
     def _determine_content_type(self, url: str) -> str:
-        """Быстрое определение типа контента"""
-        if '/reel/' in url or '/reels/' in url or '/tv/' in url:
+        """УЛУЧШЕННОЕ определение типа контента"""
+        if any(x in url for x in ['/reel/', '/reels/', '/tv/', '/video/']):
             return 'video'
-        elif '/p/' in url:
-            return 'post'
         elif '/stories/' in url:
             return 'story'
+        elif '/p/' in url:
+            return 'post'  # ⚠️ ИСПРАВЛЕНО: посты могут содержать видео
         else:
-            return 'auto'
+            return 'video'  # ⚠️ ИСПРАВЛЕНО: по умолчанию считаем видео
+
+    def _recheck_content_type(self, result: dict) -> dict:
+        """ПЕРЕПРОВЕРКА типа контента на основе скачанных файлов"""
+        if not result.get('files'):
+            return result
+            
+        video_files = [f for f in result['files'] if self._is_video_file(f)]
+        photo_files = [f for f in result['files'] if self._is_photo_file(f)]
+        
+        logger.info(f"📊 Перепроверка: {len(video_files)} видео, {len(photo_files)} фото")
+        
+        # ⚠️ ИСПРАВЛЕНИЕ: Логика определения типа
+        if video_files and not photo_files:
+            result['type'] = 'video'
+        elif photo_files and not video_files:
+            result['type'] = 'photo'
+        elif video_files and photo_files:
+            result['type'] = 'carousel'
+        elif video_files:
+            result['type'] = 'video'  # ⚠️ Приоритет видео если есть
+        elif photo_files:
+            result['type'] = 'photo'
+            
+        logger.info(f"🔍 Окончательный тип: {result['type']}")
+        return result
 
     def _download_story_fast(self, url: str, out_path: str, content_type: str):
         """ОПТИМИЗИРОВАННОЕ скачивание историй"""
@@ -140,9 +169,10 @@ class InstagramDownloader:
                         if self._is_media_file_fast(file_path):
                             result['files'].append(file_path)
                 
+                # ⚠️ ИСПРАВЛЕНИЕ: Улучшенное определение типа для историй
                 if result['files']:
-                    ext = result['files'][0].split('.')[-1].lower()
-                    if ext in ['mp4', 'mov', 'avi']:
+                    video_count = sum(1 for f in result['files'] if self._is_video_file(f))
+                    if video_count > 0:
                         result['type'] = 'story_video'
                     else:
                         result['type'] = 'story_photo'
@@ -154,14 +184,17 @@ class InstagramDownloader:
             raise
 
     def _download_with_ytdlp_fast(self, url: str, out_path: str, content_type: str):
-        """ОПТИМИЗИРОВАННОЕ скачивание через yt-dlp"""
+        """ИСПРАВЛЕННОЕ скачивание через yt-dlp"""
         ydl_opts = self.fast_ydl_opts.copy()
         ydl_opts['outtmpl'] = os.path.join(out_path, '%(id)s.%(ext)s')
         
-        if content_type == 'video':
-            ydl_opts['format'] = 'best[ext=mp4]/best'
+        # ⚠️ ИСПРАВЛЕНИЕ: Улучшенные форматы для разных типов контента
+        if content_type in ['video', 'post']:  # ⚠️ Посты тоже могут содержать видео
+            ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best'
         elif content_type == 'photo':
             ydl_opts['format'] = 'best[ext=jpg]/best[ext=png]/best'
+        
+        logger.info(f"🎯 Используем формат: {ydl_opts['format']}")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -170,9 +203,11 @@ class InstagramDownloader:
                 'type': 'unknown',
                 'files': [],
                 'title': info.get('title', 'instagram_content'),
-                'webpage_url': info.get('webpage_url', url)
+                'webpage_url': info.get('webpage_url', url),
+                'original_info': info  # ⚠️ ДОБАВЛЕНО: для отладки
             }
             
+            # Собираем скачанные файлы
             if info.get('requested_downloads'):
                 for download in info['requested_downloads']:
                     file_path = download['filepath']
@@ -185,15 +220,27 @@ class InstagramDownloader:
                     if self._is_media_file_fast(file_path):
                         result['files'].append(file_path)
             
+            # ⚠️ ИСПРАВЛЕНИЕ: Улучшенное определение типа
+            video_files = [f for f in result['files'] if self._is_video_file(f)]
+            photo_files = [f for f in result['files'] if self._is_photo_file(f)]
+            
+            logger.info(f"📁 Найдено файлов: {len(result['files'])} (видео: {len(video_files)}, фото: {len(photo_files)})")
+            
             if info.get('_type') == 'playlist' or len(result['files']) > 1:
                 result['type'] = 'carousel'
             else:
-                if result['files']:
-                    ext = result['files'][0].split('.')[-1].lower()
-                    if ext in ['jpg', 'png', 'jpeg']:
-                        result['type'] = 'photo'
-                    elif ext in ['mp4', 'mov', 'avi']:
-                        result['type'] = 'video'
+                if video_files:
+                    result['type'] = 'video'
+                elif photo_files:
+                    result['type'] = 'photo'
+                else:
+                    # Резервное определение по расширению
+                    if result['files']:
+                        ext = result['files'][0].split('.')[-1].lower()
+                        if ext in ['jpg', 'png', 'jpeg']:
+                            result['type'] = 'photo'
+                        elif ext in ['mp4', 'mov', 'avi']:
+                            result['type'] = 'video'
             
             return result
 
@@ -203,8 +250,40 @@ class InstagramDownloader:
         file_ext = os.path.splitext(file_path)[1].lower()
         return file_ext in media_extensions and os.path.isfile(file_path)
 
+    def _is_video_file(self, file_path: str) -> bool:
+        """Проверяет, является ли файл видео"""
+        video_extensions = {'.mp4', '.mov', '.avi', '.webm', '.mkv'}
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        if file_ext in video_extensions:
+            return True
+        
+        # Дополнительная проверка через filetype
+        try:
+            import filetype
+            kind = filetype.guess(file_path)
+            return kind and kind.mime.startswith('video/')
+        except:
+            return file_ext in video_extensions
+
+    def _is_photo_file(self, file_path: str) -> bool:
+        """Проверяет, является ли файл фото"""
+        photo_extensions = {'.jpg', '.jpeg', '.png', '.webp'}
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        if file_ext in photo_extensions:
+            return True
+        
+        # Дополнительная проверка через filetype
+        try:
+            import filetype
+            kind = filetype.guess(file_path)
+            return kind and kind.mime.startswith('image/')
+        except:
+            return file_ext in photo_extensions
+
     async def _download_with_instaloader(self, url: str, out_path: str):
-        """Ваш оригинальный метод для fallback"""
+        """Fallback метод через instaloader"""
         try:
             L = instaloader.Instaloader(
                 dirname_pattern=out_path,
@@ -237,10 +316,13 @@ class InstagramDownloader:
                 'webpage_url': url
             }
             
-            if downloaded_files:
-                ext = downloaded_files[0].split('.')[-1].lower()
-                if ext in ['mp4', 'mov', 'avi']:
+            # ⚠️ ИСПРАВЛЕНИЕ: Улучшенное определение типа
+            video_files = [f for f in downloaded_files if self._is_video_file(f)]
+            if video_files:
+                if len(video_files) == 1 and len(downloaded_files) == 1:
                     result['type'] = 'video'
+                else:
+                    result['type'] = 'carousel'
                     
             return result
             
