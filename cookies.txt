@@ -2,11 +2,11 @@
 # https://curl.haxx.se/rfc/cookie_spec.html
 # This is a generated file! Do not edit.
 
-.instagram.com	TRUE	/	TRUE	1797412065	csrftoken	-zvI-JEXzY9m1Xd9cES5Nq
-.instagram.com	TRUE	/	TRUE	1763456864	wd	1920x953
+.instagram.com	TRUE	/	TRUE	1763463389	wd	1920x953
 .instagram.com	TRUE	/	TRUE	1797411733	mid	aRL7WAALAAGkyyeEKEMs-N-KfkYV
 .instagram.com	TRUE	/	TRUE	1797411743	datr	WPsSadET2l-sBgWO7wBh4cec
 .instagram.com	TRUE	/	TRUE	1794387743	ig_did	78F3C2DA-E000-4511-94BD-C80894E9EF60
-.instagram.com	TRUE	/	TRUE	1794388057	sessionid	54304294889%3AR16V7yuB7noaCf%3A26%3AAYgkvmXG18uJ2edOm_ZeW2HmxrMlM38Mpyu4-mgZrA
-.instagram.com	TRUE	/	TRUE	1770628065	ds_user_id	54304294889
-.instagram.com	TRUE	/	TRUE	0	rur	"LDC\05454304294889\0541794388013:01fef156c193b5b5bd1375660b88ac6a632ef142e70d44a0965997cfc3a92d8e30eeb873"
+.instagram.com	TRUE	/	TRUE	1797418593	csrftoken	eXiriI26IMDB3jr2YEOpgTdu4f4avAYO
+.instagram.com	TRUE	/	TRUE	1794394588	sessionid	54304294889%3A8ZYVkxKhqWUHEH%3A7%3AAYiPTAgFOw_YZXaf58x7yWSej3ItTGQKm5_7MyA91A
+.instagram.com	TRUE	/	TRUE	1770634593	ds_user_id	54304294889
+.instagram.com	TRUE	/	TRUE	0	rur	"LDC\05454304294889\0541794394541:01fe649f78ec57a3f0870248813f9c426a2b88278d219728b29924972f837cbcd987ea53"
