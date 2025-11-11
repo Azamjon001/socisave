@@ -69,6 +69,9 @@ class InstagramDownloader:
             'skip_unavailable_fragments': True,
             'keep_fragments': False,
             'concurrent_fragment_downloads': 6,
+            'writethumbnail': False,  # ⚠️ Не скачивать обложки
+            'writesubtitles': False,
+            'writeautomaticsub': False,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': '*/*',
@@ -86,13 +89,30 @@ class InstagramDownloader:
             content_type = await self._determine_real_content_type(url)
             logger.info(f"🔍 Определен реальный тип контента: {content_type}")
             
-            if '/stories/' in url:
+            # ⚠️ ВАЖНО: Для видео используем ТОЛЬКО yt-dlp
+            if content_type in ['video', 'story_video']:
+                logger.info("🎥 Используем yt-dlp для скачивания видео")
                 result = await loop.run_in_executor(
-                    self.thread_pool, 
-                    self._download_story_fast, 
-                    url, out_path, content_type
+                    self.thread_pool,
+                    self._download_video_only_with_ytdlp,
+                    url, out_path
+                )
+            elif content_type in ['photo', 'story_photo']:
+                logger.info("🖼️ Используем yt-dlp для скачивания фото")
+                result = await loop.run_in_executor(
+                    self.thread_pool,
+                    self._download_photo_only_with_ytdlp,
+                    url, out_path
+                )
+            elif content_type == 'carousel':
+                logger.info("🔄 Используем yt-dlp для карусели")
+                result = await loop.run_in_executor(
+                    self.thread_pool,
+                    self._download_carousel_with_ytdlp,
+                    url, out_path
                 )
             else:
+                # По умолчанию используем yt-dlp
                 result = await loop.run_in_executor(
                     self.thread_pool,
                     self._download_with_ytdlp_fast,
@@ -104,8 +124,12 @@ class InstagramDownloader:
             return result
             
         except Exception as e:
-            logger.warning(f"Быстрый метод не сработал: {e}, пробуем instaloader")
-            return await self._download_with_instaloader(url, out_path)
+            logger.warning(f"yt-dlp не сработал: {e}, пробуем fallback методы только для фото")
+            # ⚠️ Fallback ТОЛЬКО для фото, не для видео
+            if 'video' not in str(content_type).lower():
+                return await self._download_with_instaloader(url, out_path)
+            else:
+                raise Exception(f"Не удалось скачать видео через yt-dlp: {e}")
 
     async def _determine_real_content_type(self, url: str) -> str:
         """ОПРЕДЕЛЕНИЕ РЕАЛЬНОГО ТИПА КОНТЕНТА БЕЗ СКАЧИВАНИЯ"""
@@ -173,104 +197,128 @@ class InstagramDownloader:
         else:
             return 'video'
 
-    def _filter_files_by_content_type(self, result: dict) -> dict:
-        """ФИЛЬТРАЦИЯ ФАЙЛОВ ПО ТИПУ КОНТЕНТА"""
-        if not result.get('files'):
+    def _download_video_only_with_ytdlp(self, url: str, out_path: str):
+        """СКАЧИВАНИЕ ТОЛЬКО ВИДЕО через yt-dlp"""
+        ydl_opts = self.fast_ydl_opts.copy()
+        ydl_opts['outtmpl'] = os.path.join(out_path, 'video_%(id)s.%(ext)s')
+        ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best'
+        ydl_opts['writethumbnail'] = False  # ⚠️ Не скачивать обложки
+        
+        logger.info("🎥 Скачиваем видео через yt-dlp")
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            result = {
+                'type': 'video',
+                'files': [],
+                'title': info.get('title', 'instagram_video'),
+                'webpage_url': info.get('webpage_url', url),
+            }
+            
+            # Собираем ТОЛЬКО видео файлы
+            if info.get('requested_downloads'):
+                for download in info['requested_downloads']:
+                    file_path = download['filepath']
+                    if os.path.exists(file_path) and self._is_video_file(file_path):
+                        result['files'].append(file_path)
+            
+            # Если не нашли через requested_downloads, ищем в директории
+            if not result['files']:
+                for file in os.listdir(out_path):
+                    file_path = os.path.join(out_path, file)
+                    if self._is_video_file(file_path):
+                        result['files'].append(file_path)
+            
+            logger.info(f"📹 Найдено видео файлов: {len(result['files'])}")
             return result
-            
-        content_type = result.get('type', 'unknown')
-        video_files = [f for f in result['files'] if self._is_video_file(f)]
-        photo_files = [f for f in result['files'] if self._is_photo_file(f)]
-        
-        logger.info(f"📊 До фильтрации: {len(video_files)} видео, {len(photo_files)} фото")
-        
-        # ⚠️ ВАЖНО: Фильтруем файлы в зависимости от типа контента
-        if content_type in ['video', 'story_video']:
-            # Для видео оставляем ТОЛЬКО видео файлы
-            result['files'] = video_files
-            if not result['files']:
-                logger.warning("⚠️ Нет видео файлов после фильтрации!")
-                
-        elif content_type in ['photo', 'story_photo']:
-            # Для фото оставляем ТОЛЬКО фото файлы
-            result['files'] = photo_files
-            if not result['files']:
-                logger.warning("⚠️ Нет фото файлов после фильтрации!")
-                
-        elif content_type == 'carousel':
-            # Для карусели оставляем все файлы (и фото и видео)
-            # Но можно добавить дополнительную логику если нужно
-            pass
-        
-        logger.info(f"📊 После фильтрации: {len(result['files'])} файлов")
-        return result
 
-    def _download_story_fast(self, url: str, out_path: str, content_type: str):
-        """ОПТИМИЗИРОВАННОЕ скачивание историй"""
-        try:
-            ydl_opts = self.fast_ydl_opts.copy()
-            ydl_opts['outtmpl'] = os.path.join(out_path, 'story_%(id)s.%(ext)s')
+    def _download_photo_only_with_ytdlp(self, url: str, out_path: str):
+        """СКАЧИВАНИЕ ТОЛЬКО ФОТО через yt-dlp"""
+        ydl_opts = self.fast_ydl_opts.copy()
+        ydl_opts['outtmpl'] = os.path.join(out_path, 'photo_%(id)s.%(ext)s')
+        ydl_opts['format'] = 'best[ext=jpg]/best[ext=png]/best'
+        ydl_opts['writethumbnail'] = False  # ⚠️ Не скачивать обложки
+        
+        logger.info("🖼️ Скачиваем фото через yt-dlp")
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
             
-            # Настраиваем формат в зависимости от типа контента
-            if content_type == 'video':
-                ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best'
-            else:
-                ydl_opts['format'] = 'best[ext=jpg]/best[ext=png]/best'
+            result = {
+                'type': 'photo',
+                'files': [],
+                'title': info.get('title', 'instagram_photo'),
+                'webpage_url': info.get('webpage_url', url),
+            }
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-                result = {
-                    'type': 'story',
-                    'files': [],
-                    'title': f"instagram_story_{info.get('id', 'unknown')}",
-                    'webpage_url': url
-                }
-                
-                # Собираем скачанные файлы
-                if info.get('requested_downloads'):
-                    for download in info['requested_downloads']:
-                        file_path = download['filepath']
-                        if os.path.exists(file_path) and self._is_media_file_fast(file_path):
-                            result['files'].append(file_path)
-                
-                if not result['files']:
-                    for file in os.listdir(out_path):
-                        file_path = os.path.join(out_path, file)
-                        if self._is_media_file_fast(file_path):
-                            result['files'].append(file_path)
-                
-                # Определяем окончательный тип
-                if result['files']:
-                    video_count = sum(1 for f in result['files'] if self._is_video_file(f))
-                    if video_count > 0:
-                        result['type'] = 'story_video'
-                    else:
-                        result['type'] = 'story_photo'
-                
-                return result
-                
-        except Exception as e:
-            logger.warning(f"Быстрый yt-dlp для историй не сработал: {e}")
-            raise
+            # Собираем ТОЛЬКО фото файлы
+            if info.get('requested_downloads'):
+                for download in info['requested_downloads']:
+                    file_path = download['filepath']
+                    if os.path.exists(file_path) and self._is_photo_file(file_path):
+                        result['files'].append(file_path)
+            
+            # Если не нашли через requested_downloads, ищем в директории
+            if not result['files']:
+                for file in os.listdir(out_path):
+                    file_path = os.path.join(out_path, file)
+                    if self._is_photo_file(file_path):
+                        result['files'].append(file_path)
+            
+            logger.info(f"📸 Найдено фото файлов: {len(result['files'])}")
+            return result
+
+    def _download_carousel_with_ytdlp(self, url: str, out_path: str):
+        """СКАЧИВАНИЕ КАРУСЕЛИ через yt-dlp"""
+        ydl_opts = self.fast_ydl_opts.copy()
+        ydl_opts['outtmpl'] = os.path.join(out_path, 'carousel_%(id)s_%(playlist_index)s.%(ext)s')
+        ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best/best[ext=jpg]/best[ext=png]'
+        ydl_opts['writethumbnail'] = False  # ⚠️ Не скачивать обложки
+        
+        logger.info("🔄 Скачиваем карусель через yt-dlp")
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            result = {
+                'type': 'carousel',
+                'files': [],
+                'title': info.get('title', 'instagram_carousel'),
+                'webpage_url': info.get('webpage_url', url),
+            }
+            
+            # Собираем все медиафайлы (и фото и видео)
+            if info.get('requested_downloads'):
+                for download in info['requested_downloads']:
+                    file_path = download['filepath']
+                    if os.path.exists(file_path) and self._is_media_file_fast(file_path):
+                        result['files'].append(file_path)
+            
+            # Если не нашли через requested_downloads, ищем в директории
+            if not result['files']:
+                for file in os.listdir(out_path):
+                    file_path = os.path.join(out_path, file)
+                    if self._is_media_file_fast(file_path):
+                        result['files'].append(file_path)
+            
+            logger.info(f"🖼️ Найдено файлов в карусели: {len(result['files'])}")
+            return result
 
     def _download_with_ytdlp_fast(self, url: str, out_path: str, content_type: str):
-        """ИСПРАВЛЕННОЕ скачивание через yt-dlp с правильными форматами"""
+        """УНИВЕРСАЛЬНОЕ скачивание через yt-dlp"""
         ydl_opts = self.fast_ydl_opts.copy()
         ydl_opts['outtmpl'] = os.path.join(out_path, '%(id)s.%(ext)s')
         
-        # ⚠️ ВАЖНО: Настраиваем формат в зависимости от типа контента
+        # Настраиваем формат в зависимости от типа контента
         if content_type == 'video':
             ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best'
-            ydl_opts['writethumbnail'] = False  # ⚠️ Не скачивать обложки
         elif content_type == 'photo':
             ydl_opts['format'] = 'best[ext=jpg]/best[ext=png]/best'
-            ydl_opts['writethumbnail'] = False  # ⚠️ Не скачивать обложки
-        else:  # post, carousel
-            # Для постов и каруселей скачиваем все
+        else:  # post, carousel, story
             ydl_opts['format'] = 'bestvideo+bestaudio/best[height<=1080]/best/best[ext=jpg]/best[ext=png]'
         
-        logger.info(f"🎯 Используем формат для {content_type}: {ydl_opts['format']}")
+        logger.info(f"🎯 Используем yt-dlp формат для {content_type}: {ydl_opts['format']}")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -302,7 +350,7 @@ class InstagramDownloader:
             video_files = [f for f in result['files'] if self._is_video_file(f)]
             photo_files = [f for f in result['files'] if self._is_photo_file(f)]
             
-            logger.info(f"📁 Скачано файлов: {len(result['files'])} (видео: {len(video_files)}, фото: {len(photo_files)})")
+            logger.info(f"📁 Скачано файлов через yt-dlp: {len(result['files'])} (видео: {len(video_files)}, фото: {len(photo_files)})")
             
             if info.get('_type') == 'playlist' or len(result['files']) > 1:
                 result['type'] = 'carousel'
@@ -321,6 +369,37 @@ class InstagramDownloader:
                             result['type'] = 'video'
             
             return result
+
+    def _filter_files_by_content_type(self, result: dict) -> dict:
+        """ФИЛЬТРАЦИЯ ФАЙЛОВ ПО ТИПУ КОНТЕНТА"""
+        if not result.get('files'):
+            return result
+            
+        content_type = result.get('type', 'unknown')
+        video_files = [f for f in result['files'] if self._is_video_file(f)]
+        photo_files = [f for f in result['files'] if self._is_photo_file(f)]
+        
+        logger.info(f"📊 До фильтрации: {len(video_files)} видео, {len(photo_files)} фото")
+        
+        # ⚠️ ВАЖНО: Фильтруем файлы в зависимости от типа контента
+        if content_type in ['video', 'story_video']:
+            # Для видео оставляем ТОЛЬКО видео файлы
+            result['files'] = video_files
+            if not result['files']:
+                logger.warning("⚠️ Нет видео файлов после фильтрации!")
+                
+        elif content_type in ['photo', 'story_photo']:
+            # Для фото оставляем ТОЛЬКО фото файлы
+            result['files'] = photo_files
+            if not result['files']:
+                logger.warning("⚠️ Нет фото файлов после фильтрации!")
+                
+        elif content_type == 'carousel':
+            # Для карусели оставляем все файлы (и фото и видео)
+            pass
+        
+        logger.info(f"📊 После фильтрации: {len(result['files'])} файлов")
+        return result
 
     def _is_thumbnail_file(self, file_path: str) -> bool:
         """Проверяет, является ли файл обложкой/миниатюрой"""
@@ -371,13 +450,15 @@ class InstagramDownloader:
             return file_ext in photo_extensions
 
     async def _download_with_instaloader(self, url: str, out_path: str):
-        """Fallback метод через instaloader"""
+        """Fallback метод через instaloader ТОЛЬКО ДЛЯ ФОТО"""
         try:
+            logger.info("🔄 Используем instaloader как fallback для фото")
+            
             L = instaloader.Instaloader(
                 dirname_pattern=out_path,
                 filename_pattern='{shortcode}',
                 download_pictures=True,
-                download_videos=True,
+                download_videos=False,  # ⚠️ Не скачиваем видео через instaloader
                 download_geotags=False,
                 download_comments=False,
                 save_metadata=False,
@@ -394,7 +475,7 @@ class InstagramDownloader:
             downloaded_files = []
             for file in os.listdir(out_path):
                 file_path = os.path.join(out_path, file)
-                if self._is_media_file_fast(file_path) and not self._is_thumbnail_file(file_path):
+                if self._is_photo_file(file_path) and not self._is_thumbnail_file(file_path):
                     downloaded_files.append(file_path)
             
             result = {
@@ -404,14 +485,6 @@ class InstagramDownloader:
                 'webpage_url': url
             }
             
-            # Определяем тип на основе скачанных файлов
-            video_files = [f for f in downloaded_files if self._is_video_file(f)]
-            if video_files:
-                if len(video_files) == 1 and len(downloaded_files) == 1:
-                    result['type'] = 'video'
-                else:
-                    result['type'] = 'carousel'
-                    
             return result
             
         except Exception as e:
@@ -514,10 +587,10 @@ async def start(client, message):
     try:
         welcome_msg = await message.reply_text(
             "📥 Отправь ссылку из Instagram — я скачаю контент:\n"
-            "• Видео - только видео\n" 
-            "• Фото - только фото\n"
-            "• Карусель - все медиафайлы\n"
-            "⚡ Автоматически определяет тип контента!"
+            "• 🎥 Видео - только видео (yt-dlp)\n" 
+            "• 🖼️ Фото - только фото (yt-dlp)\n"
+            "• 🔄 Карусель - все медиафайлы (yt-dlp)\n"
+            "⚡ Используется yt-dlp для максимальной скорости!"
         )
         logger.info(f"✅ Отправлено приветственное сообщение пользователю {message.from_user.id}")
     except Exception as e:
@@ -620,11 +693,11 @@ async def _handle_instagram_fast(client, message, url, status, downloader, tmp_d
         # Определяем тип контента перед скачиванием
         content_type = await downloader._determine_real_content_type(url)
         type_messages = {
-            'video': '🎥 Видео',
-            'photo': '🖼️ Фото', 
-            'story_video': '📹 Видео-история',
-            'story_photo': '📸 Фото-история',
-            'carousel': '🔄 Карусель'
+            'video': '🎥 Видео (yt-dlp)',
+            'photo': '🖼️ Фото (yt-dlp)', 
+            'story_video': '📹 Видео-история (yt-dlp)',
+            'story_photo': '📸 Фото-история (yt-dlp)',
+            'carousel': '🔄 Карусель (yt-dlp)'
         }
         
         await status.edit_text(f"⚡ Скачиваю {type_messages.get(content_type, 'контент')}...")
@@ -651,7 +724,7 @@ async def _handle_instagram_fast(client, message, url, status, downloader, tmp_d
         # Отправляем контент
         await send_content(client, message, content_info)
         
-        logger.info(f"✅ Instagram {content_info['type']} отправлен ({len(validated_files)} файлов)")
+        logger.info(f"✅ Instagram {content_info['type']} отправлен через yt-dlp ({len(validated_files)} файлов)")
         
     except Exception as e:
         raise e
@@ -673,7 +746,7 @@ async def send_content(client, message, content_info):
             if os.path.exists(file_path):
                 task = message.reply_photo(
                     file_path,
-                    caption=f"📸 Instagram {'история' if 'story' in content_type else 'фото'} через @azams_bot"
+                    caption=f"📸 Instagram {'история' if 'story' in content_type else 'фото'} через @azams_bot\n⚡ Скачано через yt-dlp"
                 )
                 tasks.append(task)
         
@@ -686,7 +759,7 @@ async def send_content(client, message, content_info):
             if os.path.exists(file_path):
                 task = message.reply_video(
                     file_path,
-                    caption=f"📹 Instagram {'история' if 'story' in content_type else 'видео'} через @azams_bot",
+                    caption=f"📹 Instagram {'история' if 'story' in content_type else 'видео'} через @azams_bot\n⚡ Скачано через yt-dlp",
                     supports_streaming=True
                 )
                 tasks.append(task)
@@ -709,13 +782,13 @@ async def _send_carousel_fast(client, message, files):
             if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
                 media_item = InputMediaPhoto(file_path)
                 if i == 0:
-                    media_item.caption = "🖼️ Instagram карусель через @azams_bot"
+                    media_item.caption = "🖼️ Instagram карусель через @azams_bot\n⚡ Скачано через yt-dlp"
                 media_group.append(media_item)
                 
             elif file_path.lower().endswith(('.mp4', '.mov', '.avi')):
                 media_item = InputMediaVideo(file_path)
                 if i == 0:
-                    media_item.caption = "🎬 Instagram карусель через @azams_bot"
+                    media_item.caption = "🎬 Instagram карусель через @azams_bot\n⚡ Скачано через yt-dlp"
                 media_group.append(media_item)
                 
         except Exception as e:
@@ -766,6 +839,7 @@ if __name__ == "__main__":
         os.makedirs("downloads")
     
     logger.info("🚀 ЗАПУСК БОТА ДЛЯ СКАЧИВАНИЯ INSTAGRAM...")
+    logger.info("🎯 Основной движок: yt-dlp")
     
     try:
         app.run()
