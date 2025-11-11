@@ -1,4 +1,4 @@
-        import os
+import os
 import asyncio
 import logging
 import tempfile
@@ -662,3 +662,4 @@ if __name__ == "__main__":
         logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска бота: {e}")
+
