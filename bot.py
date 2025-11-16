@@ -1,10 +1,10 @@
-import os
+
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
 # -----------------------------
-# Downloader для Instagram
+# 1) SaveIG Downloader
 # -----------------------------
 def download_saveig(url):
     try:
@@ -19,6 +19,9 @@ def download_saveig(url):
     except:
         return None
 
+# -----------------------------
+# 2) SnapInsta Downloader
+# -----------------------------
 def download_snapinsta(url):
     try:
         api = "https://snapinsta.app/api/ajaxSearch"
@@ -32,6 +35,9 @@ def download_snapinsta(url):
     except:
         return None
 
+# -----------------------------
+# 3) Toolzu Downloader
+# -----------------------------
 def download_toolzu(url):
     try:
         api = "https://toolzu.com/api/instagram/get-post"
@@ -43,6 +49,9 @@ def download_toolzu(url):
     except:
         return None
 
+# -----------------------------
+# UNIVERSAL DOWNLOADER
+# -----------------------------
 def universal_instagram_downloader(insta_url):
     result = download_saveig(insta_url)
     if result: return result
@@ -74,11 +83,9 @@ async def handle_instagram(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main
 # -----------------------------
 if __name__ == "__main__":
-    TOKEN = os.environ.get("6788128988:AAEMmCSafiiEqtS5UWQQxfo--W0On7B6Q08")  # используем переменные окружения Railway
-    if not TOKEN:
-        print("❌ Установите TELEGRAM_BOT_TOKEN в Railway Dashboard!")
-        exit(1)
+    # 🔹 Вставь сюда свой токен от BotFather
+    TELEGRAM_BOT_TOKEN = "6788128988:AAEMmCSafiiEqtS5UWQQxfo--W0On7B6Q08"  # <- Замените на ваш токен
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_instagram))
     app.run_polling()
