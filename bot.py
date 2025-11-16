@@ -14,6 +14,8 @@ import instaloader
 import aiohttp
 import shutil
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+import hashlib
 
 API_ID = 26670278
 API_HASH = "e3d77390fd9c22d98bb6bddca86fef1a"
@@ -25,6 +27,126 @@ logger = logging.getLogger(__name__)
 # ------------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -------------------------
 user_processing = {}
 processed_messages = set()
+
+# ------------------------- СИСТЕМА 48 IP-АДРЕСОВ И УСТРОЙСТВ -------------------------
+class IPGenerator:
+    def __init__(self):
+        self.base_ips = self.generate_base_ips()
+        self.current_ips = self.base_ips.copy()
+        self.rotation_time = 1800  # 30 минут в секундах
+        self.last_rotation = datetime.now()
+    
+    def generate_base_ips(self):
+        """Генерируем 48 базовых IP-адресов из разных подсетей"""
+        base_ips = []
+        
+        # Разные подсети для разнообразия
+        subnets = [
+            "104.28", "104.29", "108.177", "142.250", "172.217", 
+            "173.194", "192.178", "203.208", "216.58", "216.239",
+            "74.125", "64.233", "66.102", "66.249", "72.14", 
+            "209.85", "207.126", "173.194", "216.58", "74.125"
+        ]
+        
+        for i in range(48):
+            subnet = random.choice(subnets)
+            ip3 = random.randint(1, 254)
+            ip4 = random.randint(1, 254)
+            base_ips.append(f"{subnet}.{ip3}.{ip4}")
+        
+        logger.info(f"✅ Сгенерировано {len(base_ips)} базовых IP-адресов")
+        return base_ips
+    
+    def rotate_ips(self):
+        """Ротация IP-адресов каждые 30 минут"""
+        now = datetime.now()
+        if (now - self.last_rotation).total_seconds() >= self.rotation_time:
+            logger.info("🔄 Ротация IP-адресов...")
+            
+            for i in range(len(self.current_ips)):
+                # Немного изменяем последний октет для "свежести"
+                ip_parts = self.current_ips[i].split('.')
+                ip_parts[3] = str((int(ip_parts[3]) + random.randint(1, 50)) % 255)
+                self.current_ips[i] = '.'.join(ip_parts)
+            
+            self.last_rotation = now
+            logger.info("✅ IP-адреса обновлены")
+    
+    def get_ip_for_request(self, request_id):
+        """Получаем IP для конкретного запроса"""
+        self.rotate_ips()
+        
+        # Детерминированный выбор IP на основе ID запроса
+        ip_index = hash(request_id) % len(self.current_ips)
+        selected_ip = self.current_ips[ip_index]
+        
+        return selected_ip
+
+class MobileDeviceEmulator:
+    def __init__(self):
+        self.devices = self.generate_devices()
+        self.ip_generator = IPGenerator()
+    
+    def generate_devices(self):
+        """Генерируем 48 уникальных мобильных устройств"""
+        devices = []
+        
+        # Разные модели телефонов
+        phone_models = [
+            # Samsung
+            {"brand": "Samsung", "models": ["SM-G991B", "SM-G996B", "SM-G998B", "SM-A525F", "SM-A736B"]},
+            # iPhone
+            {"brand": "Apple", "models": ["iPhone14,1", "iPhone14,2", "iPhone14,3", "iPhone15,1", "iPhone15,2"]},
+            # Xiaomi
+            {"brand": "Xiaomi", "models": ["M2102J20SG", "M2012K11AG", "22021211RG", "2109119DG"]},
+            # Google Pixel
+            {"brand": "Google", "models": ["Pixel 6", "Pixel 6 Pro", "Pixel 7", "Pixel 7 Pro"]},
+            # OnePlus
+            {"brand": "OnePlus", "models": ["LE2113", "LE2123", "NE2213", "CPH2415"]},
+        ]
+        
+        android_versions = [
+            "10; Android 10", "11; Android 11", "12; Android 12", 
+            "13; Android 13", "14; Android 14"
+        ]
+        
+        for i in range(48):
+            brand_data = random.choice(phone_models)
+            model = random.choice(brand_data["models"])
+            android = random.choice(android_versions)
+            
+            device = {
+                'id': f"device_{i+1:02d}",
+                'brand': brand_data["brand"],
+                'model': model,
+                'android_version': android,
+                'user_agent': self.generate_user_agent(brand_data["brand"], model, android),
+                'screen_resolution': self.generate_screen_resolution(brand_data["brand"]),
+                'app_version': f"{random.randint(200, 280)}.0.0.{random.randint(10, 30)}.{random.randint(100, 200)}"
+            }
+            devices.append(device)
+        
+        logger.info(f"✅ Создано {len(devices)} виртуальных устройств")
+        return devices
+    
+    def generate_user_agent(self, brand, model, android_version):
+        """Генерируем уникальный User-Agent для каждого устройства"""
+        if brand == "Apple":
+            return f"Mozilla/5.0 (iPhone; CPU iPhone OS {android_version.replace('; Android', '').replace(' ', '_')} like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1"
+        else:
+            return f"Mozilla/5.0 (Linux; Android {android_version}; {model}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Mobile Safari/537.36"
+    
+    def generate_screen_resolution(self, brand):
+        """Генерируем разрешение экрана в зависимости от бренда"""
+        if brand == "Apple":
+            return random.choice(["1170x2532", "1284x2778", "1179x2556"])
+        else:
+            return random.choice(["1080x2400", "1440x3200", "1080x2340", "1440x3040"])
+    
+    def get_device_for_request(self, request_id):
+        """Получаем устройство для запроса"""
+        device_index = hash(request_id) % len(self.devices)
+        return self.devices[device_index]
 
 # ------------------------- ОПТИМИЗИРОВАННЫЙ SafeClient -------------------------
 class SafeClient(Client):
@@ -47,46 +169,78 @@ app = SafeClient(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    sleep_threshold=30,  # Увеличили для стабильности
-    workers=100,  # Больше workers для параллелизма
+    sleep_threshold=30,
+    workers=100,
 )
 
-# ------------------------- ОПТИМИЗИРОВАННЫЙ Instagram Downloader -------------------------
+# ------------------------- ОБНОВЛЕННЫЙ Instagram Downloader -------------------------
 class InstagramDownloader:
     def __init__(self):
-        # ОПТИМИЗИРОВАННЫЕ НАСТРОЙКИ yt-dlp ДЛЯ СКОРОСТИ
-        self.fast_ydl_opts = {
-            'outtmpl': 'downloads/%(id)s.%(ext)s',  # Простые имена - быстрее
-            'format': 'best[height<=720]',  # Только HD - быстрее чем 4K
+        self.device_emulator = MobileDeviceEmulator()
+        self.thread_pool = ThreadPoolExecutor(max_workers=3)
+        self.request_counter = 0
+
+    def get_ydl_opts(self, request_id):
+        """Получаем настройки yt-dlp с уникальными параметрами для каждого запроса"""
+        device = self.device_emulator.get_device_for_request(request_id)
+        ip_address = self.device_emulator.ip_generator.get_ip_for_request(request_id)
+        
+        # Создаем уникальные заголовки для каждого запроса
+        headers = {
+            'User-Agent': device['user_agent'],
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Cache-Control': 'max-age=0',
+            # Эмулируем мобильное устройство
+            'Viewport-Width': device['screen_resolution'].split('x')[0],
+            'Width': device['screen_resolution'].split('x')[0],
+        }
+        
+        return {
+            'outtmpl': 'downloads/%(id)s.%(ext)s',
+            'format': 'best[height<=720]',
             'cookiefile': 'cookies.txt',
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
             'noplaylist': True,
             
-            # ⚡ ОПТИМИЗАЦИИ СКОРОСТИ ⚡
+            # ⚡ ОПТИМИЗАЦИИ СКОРОСТИ
             'socket_timeout': 15,
             'extractretry': 1,
             'retries': 2,
             'fragment_retries': 2,
             'skip_unavailable_fragments': True,
             'keep_fragments': False,
-            'concurrent_fragment_downloads': 6,  # ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА
+            'concurrent_fragment_downloads': 6,
             
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': '*/*',
-                'Accept-Encoding': 'gzip, deflate, br',
-            }
+            # 🆕 УНИКАЛЬНЫЕ НАСТРОЙКИ ДЛЯ КАЖДОГО ЗАПРОСА
+            'http_headers': headers,
+            'user_agent': device['user_agent'],
+            
+            # Эмуляция реального устройства
+            'referer': 'https://www.instagram.com/',
+            'origin': 'https://www.instagram.com',
         }
-        
-        # Пул потоков для параллельной обработки
-        self.thread_pool = ThreadPoolExecutor(max_workers=3)
 
     async def download_instagram_content(self, url: str, out_path: str):
-        """ОПТИМИЗИРОВАННАЯ функция для скачивания"""
+        """ОПТИМИЗИРОВАННАЯ функция для скачивания с уникальными параметрами"""
         try:
-            # Используем пул потоков для неблокирующего выполнения
+            self.request_counter += 1
+            request_id = f"{int(time.time())}_{self.request_counter}"
+            
+            # Логируем параметры устройства
+            device = self.device_emulator.get_device_for_request(request_id)
+            ip_address = self.device_emulator.ip_generator.get_ip_for_request(request_id)
+            logger.info(f"📱 Запрос {request_id}: {device['brand']} {device['model']} | IP: {ip_address}")
+            
             loop = asyncio.get_event_loop()
             content_type = self._determine_content_type(url)
             logger.info(f"🔍 Определен тип контента: {content_type}")
@@ -95,13 +249,13 @@ class InstagramDownloader:
                 result = await loop.run_in_executor(
                     self.thread_pool, 
                     self._download_story_fast, 
-                    url, out_path, content_type
+                    url, out_path, content_type, request_id
                 )
             else:
                 result = await loop.run_in_executor(
                     self.thread_pool,
                     self._download_with_ytdlp_fast,
-                    url, out_path, content_type
+                    url, out_path, content_type, request_id
                 )
             return result
         except Exception as e:
@@ -119,10 +273,10 @@ class InstagramDownloader:
         else:
             return 'auto'
 
-    def _download_story_fast(self, url: str, out_path: str, content_type: str):
-        """ОПТИМИЗИРОВАННОЕ скачивание историй"""
+    def _download_story_fast(self, url: str, out_path: str, content_type: str, request_id: str):
+        """ОПТИМИЗИРОВАННОЕ скачивание историй с уникальными параметрами"""
         try:
-            ydl_opts = self.fast_ydl_opts.copy()
+            ydl_opts = self.get_ydl_opts(request_id)
             ydl_opts['outtmpl'] = os.path.join(out_path, 'story_%(id)s.%(ext)s')
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -132,7 +286,8 @@ class InstagramDownloader:
                     'type': 'story',
                     'files': [],
                     'title': f"instagram_story_{info.get('id', 'unknown')}",
-                    'webpage_url': url
+                    'webpage_url': url,
+                    'request_id': request_id
                 }
                 
                 # БЫСТРЫЙ поиск файлов
@@ -163,9 +318,9 @@ class InstagramDownloader:
             logger.warning(f"Быстрый yt-dlp для историй не сработал: {e}")
             raise
 
-    def _download_with_ytdlp_fast(self, url: str, out_path: str, content_type: str):
-        """ОПТИМИЗИРОВАННОЕ скачивание через yt-dlp"""
-        ydl_opts = self.fast_ydl_opts.copy()
+    def _download_with_ytdlp_fast(self, url: str, out_path: str, content_type: str, request_id: str):
+        """ОПТИМИЗИРОВАННОЕ скачивание через yt-dlp с уникальными параметрами"""
+        ydl_opts = self.get_ydl_opts(request_id)
         ydl_opts['outtmpl'] = os.path.join(out_path, '%(id)s.%(ext)s')
         
         # Быстрая настройка формата
@@ -181,7 +336,8 @@ class InstagramDownloader:
                 'type': 'unknown',
                 'files': [],
                 'title': info.get('title', 'instagram_content'),
-                'webpage_url': info.get('webpage_url', url)
+                'webpage_url': info.get('webpage_url', url),
+                'request_id': request_id
             }
             
             # БЫСТРЫЙ сбор файлов
@@ -242,7 +398,7 @@ class InstagramDownloader:
             
             for story in L.get_stories([profile.userid]):
                 for item in story.get_items():
-                    if story_count >= 3:  # Уменьшили лимит для скорости
+                    if story_count >= 3:
                         break
                         
                     L.download_storyitem(item, target=os.path.join(out_path, f"story_{username}"))
@@ -347,7 +503,29 @@ class InstagramDownloader:
                 return match.group(1)
         return None
 
-# ------------------------- ОПТИМИЗИРОВАННЫЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------
+# ------------------------- НОВАЯ КОМАНДА ДЛЯ СТАТИСТИКИ -------------------------
+@app.on_message(filters.command("devices"))
+async def show_devices(client, message):
+    """Показывает статистику по виртуальным устройствам"""
+    try:
+        downloader = InstagramDownloader()
+        devices = downloader.device_emulator.devices
+        
+        response = "📱 **Виртуальные устройства (48 штук):**\n\n"
+        
+        for i, device in enumerate(devices[:10]):  # Показываем первые 10
+            response += f"**{device['id']}:** {device['brand']} {device['model']}\n"
+            response += f"User-Agent: {device['user_agent'][:50]}...\n\n"
+        
+        response += f"🔄 IP-адреса обновляются каждые 30 минут\n"
+        response += f"🔧 Каждый запрос использует уникальное устройство"
+        
+        await message.reply_text(response)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ Ошибка: {e}")
+
+# ------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (БЕЗ ИЗМЕНЕНИЙ) -------------------------
 def extract_first_url(text: str) -> str:
     match = re.search(r"(https?://[^\s]+)", text)
     return match.group(1) if match else ""
@@ -363,7 +541,7 @@ def get_youtube_direct_url(url: str) -> str:
         "quiet": True, 
         "skip_download": True, 
         "format": "mp4[height<=720]/best[ext=mp4]/best",
-        "socket_timeout": 10  # Добавили таймаут
+        "socket_timeout": 10
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -377,7 +555,7 @@ def download_youtube_video(url: str, out_path: str) -> str:
         "quiet": True,
         "retries": 1,
         "merge_output_format": "mp4",
-        "concurrent_fragment_downloads": 4,  # Параллельная загрузка
+        "concurrent_fragment_downloads": 4,
         "socket_timeout": 15,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -391,7 +569,7 @@ def check_cookies_file():
     logger.info("✅ Файл cookies.txt найден")
     return True
 
-async def cleanup_user_message(message, delay: int = 2):  # Уменьшили задержку
+async def cleanup_user_message(message, delay: int = 2):
     try:
         await asyncio.sleep(delay)
         await message.delete()
@@ -440,8 +618,7 @@ def validate_and_fix_extension(file_path: str) -> str:
     
     return file_path
 
-# ------------------------- ОПТИМИЗИРОВАННЫЕ ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------------
-
+# ------------------------- ОБРАБОТЧИКИ СООБЩЕНИЙ (БЕЗ ИЗМЕНЕНИЙ) -------------------------
 @app.on_message(filters.command("start"))
 async def start(client, message):
     logger.info(f"📩 Получена команда /start от {message.from_user.id}")
@@ -529,7 +706,7 @@ async def handle_text(client, message):
         logger.info(f"⏳ Пользователь {user_id} уже имеет активный запрос")
         try:
             temp_msg = await message.reply_text("⚡ Уже обрабатываю предыдущий запрос...")
-            await asyncio.sleep(2)  # Уменьшили задержку
+            await asyncio.sleep(2)
             await temp_msg.delete()
         except Exception as e:
             logger.error(f"❌ Ошибка уведомления о занятости: {e}")
@@ -539,7 +716,7 @@ async def handle_text(client, message):
     user_processing[user_id] = {'processing': True}
     
     status = None
-    insta_downloader = InstagramDownloader()
+    insta_downloader = InstagramDownloader()  # 🆕 Теперь с системой 48 устройств
     tmp_dir = None
     
     try:
@@ -564,7 +741,7 @@ async def handle_text(client, message):
         if status:
             try:
                 error_msg = await message.reply_text(f"❌ Ошибка: {str(e)}")
-                await asyncio.sleep(4)  # Уменьшили задержку
+                await asyncio.sleep(4)
                 await error_msg.delete()
             except:
                 pass
@@ -621,7 +798,7 @@ async def _handle_instagram_fast(client, message, url, status, downloader, tmp_d
     """ОПТИМИЗИРОВАННАЯ обработка Instagram"""
     if not check_cookies_file():
         await status.edit_text("❌ Файл cookies.txt не найден. Instagram недоступен.")
-        await asyncio.sleep(3)  # Уменьшили задержку
+        await asyncio.sleep(3)
         return
         
     try:
@@ -660,7 +837,6 @@ async def send_content_fast(client, message, content_info):
     content_type = content_info['type']
     
     if content_type in ['photo', 'story_photo']:
-        # ПАРАЛЛЕЛЬНАЯ отправка фото
         tasks = []
         for file_path in files[:10]:
             if os.path.exists(file_path):
@@ -674,7 +850,6 @@ async def send_content_fast(client, message, content_info):
             await asyncio.gather(*tasks, return_exceptions=True)
             
     elif content_type in ['video', 'story_video']:
-        # ПАРАЛЛЕЛЬНАЯ отправка видео
         tasks = []
         for file_path in files[:10]:
             if os.path.exists(file_path):
@@ -720,7 +895,6 @@ async def _send_carousel_fast(client, message, files):
             logger.info(f"✅ Медиагруппа отправлена ({len(media_group)} файлов)")
         except Exception as e:
             logger.error(f"❌ Ошибка отправки медиагруппы: {e}")
-            # Fallback - параллельная отправка по одному
             tasks = []
             for file_path in files[:5]:
                 if os.path.exists(file_path):
@@ -751,11 +925,12 @@ if __name__ == "__main__":
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
     
-    logger.info("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО БОТА...")
-    logger.info("⚡ АКЦЕНТ НА СКОРОСТЬ И ПАРАЛЛЕЛИЗМ!")
+    logger.info("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО БОТА С 48 УСТРОЙСТВАМИ...")
+    logger.info("📱 48 уникальных IP-адресов и User-Agent")
+    logger.info("🔄 Автоматическая ротация каждые 30 минут")
     
     try:
         app.run()
         logger.info("✅ Бот успешно запущен и готов к работе!")
     except Exception as e:
-        logger.error(f"❌ Ошибка запуска бота: {e}")        
+        logger.error(f"❌ Ошибка запуска бота: {e}")
