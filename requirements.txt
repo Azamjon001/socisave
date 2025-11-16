@@ -8,4 +8,4 @@ aiohttp
 filetype 
 ffmpeg
 pydub
-
+python-telegram-bot==20.6
