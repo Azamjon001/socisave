@@ -1,6 +1,6 @@
 import requests
 from telegram import Update
-from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
+from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
 # -----------------------------
 # 1) SaveIG Downloader
@@ -74,22 +74,21 @@ def download_toolzu(url):
         return None
 
 
-# ------------------------------------------
-# UNIVERSAL DOWNLOADER – выбирает лучший API
-# ------------------------------------------
+# -----------------------------
+# UNIVERSAL DOWNLOADER
+# -----------------------------
 def universal_instagram_downloader(insta_url):
-
-    # 1) SaveIG
+    # Попробовать SaveIG
     result = download_saveig(insta_url)
     if result:
         return result
 
-    # 2) SnapInsta
+    # Попробовать SnapInsta
     result = download_snapinsta(insta_url)
     if result:
         return result
 
-    # 3) Toolzu
+    # Попробовать Toolzu
     result = download_toolzu(insta_url)
     if result:
         return result
@@ -100,33 +99,32 @@ def universal_instagram_downloader(insta_url):
 # -----------------------------
 # Telegram handler
 # -----------------------------
-def handle_instagram(update: Update, context: CallbackContext):
+async def handle_instagram(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-
-    update.message.reply_text("⏳ Загружаю...")
+    await update.message.reply_text("⏳ Загружаю...")
 
     files = universal_instagram_downloader(url)
 
     if not files:
-        update.message.reply_text("❌ Не удалось скачать. Попробуйте другую ссылку.")
+        await update.message.reply_text("❌ Не удалось скачать. Попробуйте другую ссылку.")
         return
 
     for link in files:
         if link.endswith(".mp4"):
-            update.message.reply_video(video=link)
+            await update.message.reply_video(video=link)
         else:
-            update.message.reply_photo(photo=link)
+            await update.message.reply_photo(photo=link)
 
 
-def main():
-    updater = Updater("6788128988:AAEMmCSafiiEqtS5UWQQxfo--W0On7B6Q08", use_context=True)
-    dp = updater.dispatcher
-
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_instagram))
-
-    updater.start_polling()
-    updater.idle()
-
-
+# -----------------------------
+# Main
+# -----------------------------
 if __name__ == "__main__":
-    main()
+    # Создаем приложение
+    app = ApplicationBuilder().token("TELEGRAM_BOT_TOKEN").build()
+
+    # Добавляем обработчик текстовых сообщений
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_instagram))
+
+    # Запуск бота
+    app.run_polling()
