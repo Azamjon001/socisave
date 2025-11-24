@@ -4,12 +4,12 @@
 
 .instagram.com	TRUE	/	TRUE	1795851203	datr	wiv7aIepJc1HJuCoRzcNNZbY
 .instagram.com	TRUE	/	TRUE	1792827250	ig_did	D53EC6E2-F436-473E-BD1D-18AEFDBED224
-.instagram.com	TRUE	/	TRUE	1764175314	wd	1920x953
+.instagram.com	TRUE	/	TRUE	1764610134	wd	1920x953
 .instagram.com	TRUE	/	TRUE	1795851220	mid	aPsr0QALAAFMCFVhrt-GVcvxVVKN
 .instagram.com	TRUE	/	TRUE	1792827220	ig_nrcb	1
 .instagram.com	TRUE	/	TRUE	1796231798	ps_l	1
 .instagram.com	TRUE	/	TRUE	1796231798	ps_n	1
-.instagram.com	TRUE	/	TRUE	1798130519	csrftoken	fSAiS3eIa9X7RQ2T2agFmcI0m5GPUt3m
-.instagram.com	TRUE	/	TRUE	1771346519	ds_user_id	69938198590
-.instagram.com	TRUE	/	TRUE	1795106511	sessionid	69938198590%3Awph1puA4LUieQT%3A28%3AAYi-BvIhzfJNyvwNnMXnsC67ka7FxXi0vU67F1ANDw
-.instagram.com	TRUE	/	TRUE	0	rur	"CLN\05469938198590\0541795106518:01fe333b834ee8bf9e3ac726f79eb1c2db95c8ef3246e32f52e7dbb3c60c3d33eb212442"
+.instagram.com	TRUE	/	TRUE	1798565342	csrftoken	L2SNqC1oK10usQNiJ092vcOwadCAgDK1
+.instagram.com	TRUE	/	TRUE	1771781342	ds_user_id	69842718110
+.instagram.com	TRUE	/	TRUE	1795541331	sessionid	69842718110%3AXOtw6niBjM4PYk%3A9%3AAYjvYiti9QypuhVkFReQtbc-zO_V0kL4jiT5trkpfQ
+.instagram.com	TRUE	/	TRUE	0	rur	"RVA\05469842718110\0541795541343:01fe13b31ba5c0cfc264cfe95ae346edbb582bff269117128b4f5f4bec137db5b4c3dc09"
