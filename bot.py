@@ -1,4 +1,4 @@
-vot smotri eto moy kod       import os
+import os
 import asyncio
 import logging
 import tempfile
